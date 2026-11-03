@@ -1,50 +1,39 @@
-%RoadNet=RoadSystem;
 function PipeTopology = generatePipeTopologyFromRoadNet(RoadNet, TerminalZone, TopPara)
-% generatePipeTopologyFromRoadNet
-%
-% Generates a pipeline topology (for water or gas) from road network data.
+% generatePipeTopologyFromRoadNet Generates a water or gas pipeline topology
+% from a road network and population zones.
 %
 %   PipeTopology = generatePipeTopologyFromRoadNet(RoadNet, TerminalZone, TopPara)
 %
 % Inputs:
 %   RoadNet: structure with fields:
-%       RoadNet.Node(n).ID, .Longitude, .Latitude, .ServedPopulation,
-%             .ServiceZone, .ClassName, .SeismicFragilityType.
-%       RoadNet.Edge(e).ID, .FromNodeID, .ToNodeID, .Length, .Highway,
-%             .MaxSpeed, .X, .Y, .ClassName, .SeismicFragilityType.
+%       RoadNet.Node(n).ID, .Longitude, .Latitude.
+%       RoadNet.Edge(e).FromNodeID, .ToNodeID, .Length, .Highway, .X, .Y.
 %
 %   TerminalZone: structure array with fields:
-%       TerminalZone(k).X, .Y, .Type, .Population.
+%       TerminalZone(k).X, .Y, .Population.
 %
 %   TopPara: structure with parameters:
-%       TopPara.PipeType: 'water' or 'gas'
-%       TopPara.MinDiameter: minimum pipe diameter (mm) to generate.
-%       TopPara.DiversityFactor: diversity factor to scale capacity (for peak demand).
+%       TopPara.PipeType: 'water' or 'gas'.
+%       TopPara.PipeDiameter: pipe diameter assigned to all generated edges
+%           (mm). The nearest diameter in the capacity table is used only
+%           to estimate the population served by one pipe.
+%       TopPara.DiversityFactor: diversity factor used to scale capacity.
 %       TopPara.numSource: number of source nodes to generate.
-%       TopPara.PumpDistExponent: exponent for pumping station probability.
+%       TopPara.PumpDistExponent: exponent used for the water-source
+%           placement probabilities.
 %
 % Output:
 %   PipeTopology: structure with fields:
-%       PipeTopology.Node(n).ID, .Longitude, .Latitude, .ClassName.
+%       PipeTopology.Node(n).ID, .Longitude, .Latitude, .Type, .ClassName.
 %       PipeTopology.Edge(e).ID, .FromNodeID, .ToNodeID, .Length, .Diameter, .X, .Y.
 %
-% Note: This function calls several helper functions that are assumed to be implemented:
-%   - generateTerminalNodes
-%   - getTerminalNodePaths
-%   - identifyRelativeNeighbors
-%   - ShortestRoutAlongRoadNet
-%   - combinePipeEdges
-%   - refineIntersections
-%
-% Author: [Your Name]
-% Date: [Date]
 
 %% STEP 1: Parameter Checking
 if ~isfield(TopPara, 'PipeType') || isempty(TopPara.PipeType)
     error('TopPara.PipeType is required.');
 end
-if ~isfield(TopPara, 'MinDiameter') || isempty(TopPara.MinDiameter)
-    error('TopPara.MinDiameter is required.');
+if ~isfield(TopPara, 'PipeDiameter') || isempty(TopPara.PipeDiameter)
+    error('TopPara.PipeDiameter is required.');
 end
 if ~isfield(TopPara, 'DiversityFactor') || isempty(TopPara.DiversityFactor)
     error('TopPara.DiversityFactor is required.');
@@ -118,16 +107,16 @@ else  % gas
     perCapitaDemand = 0.1;   % m^3/h per person for gas
 end
 
-% Use TopPara.MinDiameter to lookup nominal capacity
-minDiam = TopPara.MinDiameter;
-[~, idx] = min(abs(pipeTable(:,1) - minDiam));
+% Use the nearest tabulated diameter to estimate nominal capacity.
+pipeDiameter = TopPara.PipeDiameter;
+[~, idx] = min(abs(pipeTable(:,1) - pipeDiameter));
 nominalCapacity = pipeTable(idx, 2);  % in m^3/h
 
 % Calculate population served by a pipe: pipePOP = capacity * DiversityFactor / perCapitaDemand
 pipePOP = nominalCapacity * TopPara.DiversityFactor / perCapitaDemand;
 
-%% STEP 4: Generate Source Nodes (Gate Stations or Pumping Stations)
-% Source nodes: if gas, "gate stations"; if water, "pumping stations".
+%% STEP 4: Generate Source Nodes (Gate Stations or Pumping Plants)
+% Source nodes are gate stations for gas and pumping plants for water.
 if strcmp(PipeType, 'gas')
     % For gas, randomly select TopPara.numSource zones with population >0.
     zonesIdx = find([TerminalZone.Population] > 0);
@@ -150,7 +139,7 @@ if strcmp(PipeType, 'gas')
         sourceNodes(end).ClassName   = 'gate station';
     end
 else  % water
-    % For water, deploy pumping stations by sampling zones with probability proportional
+    % For water, deploy pumping plants by sampling zones with probability proportional
     % to TerminalZone.Population^TopPara.PumpDistExponent.
     zoneProb = ([TerminalZone.Population].^TopPara.PumpDistExponent);
     zoneProb = zoneProb / sum(zoneProb);
@@ -166,21 +155,16 @@ else  % water
         sourceNodes(end+1).ID = i;  %#ok<AGROW>
         sourceNodes(end).Longitude = validX(rnd);
         sourceNodes(end).Latitude  = validY(rnd);
-        sourceNodes(end).ClassName   = 'PumpingStation';
+        sourceNodes(end).ClassName   = 'PumpingPlant';
     end
 end
 
 %% STEP 5: Generate Terminal Nodes from RoadNet Based on Zone Population
-% Here we assume a helper function exists:
-%   TerminalNodeData = generateTerminalNodes(RoadNet, TerminalZone, pipePOP)
 % TerminalNodeData is a matrix [NodeID, Longitude, Latitude] for each terminal node.
 TerminalNodeData = generateTerminalNodes(RoadNet, TerminalZone, pipePOP);
-% (You must implement generateTerminalNodes separately.)
 
 %% STEP 6: Compute Shortest Paths among Terminal Nodes
-% Assume a helper function that returns a structure of paths that connect terminal nodes.
 terminalPaths = getTerminalNodePaths(RoadNet,Gr, TerminalNodeData);
-% (Implement getTerminalNodePaths separately.)
 
 %% STEP 7: For Each Source Node, Identify Relative-Neighbor Terminal Nodes
 % TerminalNodeData is [NodeID, Longitude, Latitude]
@@ -189,7 +173,6 @@ relative_neighbors = identifyRelativeNeighbors(TerminalNodeData, sourceCoords);
 % relative_neighbors: each row is [SourceNodeIndex, TerminalNodeID]
 
 %% STEP 8: Compute Routes from Source Nodes to Terminal Nodes
-% Assume a helper function ShortestRoutAlongRoadNet exists.
 sourceRoutes = [];
 for i = 1:size(relative_neighbors,1)
     srcIdx = relative_neighbors(i,1);
@@ -205,46 +188,34 @@ for i = 1:size(relative_neighbors,1)
     sourceRoutes = [sourceRoutes; route];  %#ok<AGROW>
 end
 
-% figure;
-% for p=1:length(terminalPaths)
-%     if terminalPaths(p).netLen/1000<=1.1*terminalPaths(p).straightLen
-%        plot(terminalPaths(p).X,terminalPaths(p).Y,'r-');hold on;
-%     else
-%        plot(terminalPaths(p).X,terminalPaths(p).Y,'k-');hold on;
-%     end
-% end
-% plot(TerminalNodeData(:,2), TerminalNodeData(:,3),'bo');hold on;
-% 
-% for p=1:length(sourceRoutes)
-%     plot(sourceRoutes(p).X,sourceRoutes(p).Y,'b-');hold on;
-% end
-% plot(sourceCoords(:,1), sourceCoords(:,2),'rp');hold on;
-
 %% STEP 9: Simply the network defined by different routes between nodes
 edgestr=terminalPaths;
 for i=1:length(sourceRoutes)
     edgestr(length(terminalPaths)+i).X=sourceRoutes(i).X;
     edgestr(length(terminalPaths)+i).Y=sourceRoutes(i).Y;
 end
-simNet = simplyNetworkFromEdgeStr(edgestr,[sourceCoords sourceCoords(:,1)*0+1;TerminalNodeData(:,2:3) TerminalNodeData(:,1)*0+2]);
+simNet = simplifyNetworkFromEdgeStr(edgestr,[sourceCoords sourceCoords(:,1)*0+1;TerminalNodeData(:,2:3) TerminalNodeData(:,1)*0+2]);
 
-ThresholdDist=0.1;simNet = simplfiyRoadNet(simNet,ThresholdDist);
+ThresholdDist=0.1;simNet = simplifyRoadNet(simNet,ThresholdDist);
 edgestr=struct;
 for h=1:length(simNet.Edge)
     edgestr(h).X=simNet.Edge(h).X;
     edgestr(h).Y=simNet.Edge(h).Y;
 end
-simNet = simplyNetworkFromEdgeStr(edgestr,[sourceCoords sourceCoords(:,1)*0+1;TerminalNodeData(:,2:3) TerminalNodeData(:,1)*0+2]);
+simNet = simplifyNetworkFromEdgeStr(edgestr,[sourceCoords sourceCoords(:,1)*0+1;TerminalNodeData(:,2:3) TerminalNodeData(:,1)*0+2]);
 %% output the results by updating the node type
 PipeTopology=simNet;
 for i = 1:numel(PipeTopology.Node)
     if PipeTopology.Node(i).Type==1
         if strcmp(PipeType, 'water')
-            PipeTopology.Node(i).ClassName = 'PumpingStation';
+            PipeTopology.Node(i).ClassName = 'PumpingPlant';
         else
             PipeTopology.Node(i).ClassName = 'GateStation';
         end
     end
+end
+for i = 1:numel(PipeTopology.Edge)
+    PipeTopology.Edge(i).Diameter = pipeDiameter;
 end
 end
 
@@ -272,22 +243,21 @@ function TerminalNodeData = generateTerminalNodes(RoadNet, TerminalZone, pipePOP
 %         [NodeID, Longitude, Latitude]
 %
 %   Procedure:
-%     - Each TerminalZone’s centroid is computed.
+%     - Each TerminalZone's centroid is computed.
 %     - For each RoadNet.Node, determine in which zones it lies.
 %     - Count for each node the number of incident edges with Highway==4 and Highway==5.
 %     - While there remain unoccupied zones:
 %         1. Randomly select an unoccupied seed zone.
 %         2. Order all remaining unoccupied zones by distance (Euclidean on zone centroids)
-%            from the seed zone; greedily add zones until the cumulative population ≤ pipePOP.
+%            from the seed zone; greedily add zones while the cumulative population
+%            does not exceed pipePOP.
 %         3. Find all RoadNet.Node that fall in any candidate zone.
-%         4. From these, if any node has ≥2 incident edges with Highway==4 or 5, 
+%         4. From these, if any node has at least two incident edges with
+%            Highway==4 or Highway==5,
 %            randomly select one; otherwise choose one at random.
 %         5. Append that node's info [NodeID, Longitude, Latitude] to TerminalNodeData.
 %         6. Mark the candidate zones as occupied.
 %     - End when all zones have been assigned.
-%
-%   Author: [Your Name]
-%   Date: [Date]
 
 %% --- Step 1: Preprocess Zones and Nodes ---
 
@@ -394,7 +364,7 @@ while ~all(occupied)
     elseif ~isempty(candidateNodes)
         chosenNodeIdx = candidateNodes(randi(numel(candidateNodes)));
     else
-        % If no candidate node is found, skip (or choose a random node overall).
+        % If no candidate node is found, choose a random road node.
         chosenNodeIdx = randi(nNodes);
     end
     
@@ -413,11 +383,13 @@ function terminalPaths = getTerminalNodePaths(RoadNet,Gr, TerminalNodeData)
 % getTerminalNodePaths Computes the union of shortest paths between terminal nodes,
 % where each path does not pass through any other terminal nodes.
 %
-%   terminalPaths = getTerminalNodePaths(Gr, TerminalNodeData)
+%   terminalPaths = getTerminalNodePaths(RoadNet, Gr, TerminalNodeData)
 %
 %   Inputs:
+%       RoadNet - road network structure containing node coordinates and
+%                 edge endpoints, lengths, and geometries.
 %       Gr - a MATLAB graph or digraph representing the network.
-%       TerminalNodeData - an N×3 numeric matrix. The first column is the terminal
+%       TerminalNodeData - an N x 3 numeric matrix. The first column is the terminal
 %                          node IDs that are present in Gr; other columns (e.g., longitude,
 %                          latitude) are ignored here.
 %
@@ -426,7 +398,10 @@ function terminalPaths = getTerminalNodePaths(RoadNet,Gr, TerminalNodeData)
 %           .Source      - the terminal node ID (starting node)
 %           .Destination - the terminal node ID (ending node)
 %           .Path        - vector of node IDs that form the shortest path from Source to Destination
-%           .Length      - total length (weight) of the path as computed by shortestpath.
+%           .Length      - initialized as an empty field; use netLen for route length.
+%           .X, .Y       - route geometry.
+%           .netLen      - total route length from RoadNet.Edge.Length.
+%           .straightLen - geographic distance between the terminal nodes.
 %
 %   Procedure:
 %       For each terminal node tn (from TerminalNodeData(:,1)):
@@ -434,9 +409,6 @@ function terminalPaths = getTerminalNodePaths(RoadNet,Gr, TerminalNodeData)
 %         b) For each other terminal node m, extract the shortest path from tn to m.
 %         c) Check the intermediate nodes (excluding tn and m) against the set of terminal node IDs.
 %            If none of the intermediate nodes are terminal nodes, record the path.
-%
-%   Author: [Your Name]
-%   Date: [Date]
 
 % Extract terminal node IDs from TerminalNodeData.
 
@@ -456,8 +428,7 @@ for i = 1:nTerminals
     tn = terminalIDs(i);
     
     [TR,~] = shortestpathtree(Gr,tn,terminalIDs,'OutputForm','cell');
-    % For the current source tn, compute the shortest-path tree.
-    % (Here we simply use MATLAB's shortestpath function on demand.)
+    % Compute the shortest-path tree from the current terminal node.
     for j = (i+1):nTerminals
         if i == j
             continue;  % skip the same node

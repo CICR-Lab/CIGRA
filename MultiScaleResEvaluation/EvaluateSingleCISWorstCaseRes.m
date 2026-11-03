@@ -1,68 +1,42 @@
 function [SysRes, ZoneRes] = EvaluateSingleCISWorstCaseRes(CIS,AttackParams,OperatorParams,TerminalZone,ResEvaParams,ResilienceGoal)
 % INTRODUCTION
-%   EvaluateSingleCISWorstCaseRes quantifies the resilience of a single critical
-%   infrastructure system (CIS) under a worst-case disruption. The workflow:
-%   (1) solve the attacker＊s worst-case target set (LC/NLC); (2) build the resulting
-%   damage scenario; (3) generate a repair sequence via the chosen strategy; (4) simulate
-%   functionality over time; (5) compute resilience using one metric:
-%       'ResLoss'  每 normalized area under (1 ? F(t))
-%       'CritTime' 每 weighted functionality at specified checkpoints
-%       'UserGoal' 每 population-weighted fraction of zones meeting outage-time goals
+%   Evaluate the resilience of one power, gas, or water system under its
+%   worst-case LC or NLC disruption. The selected repair strategy generates
+%   the recovery curve used by the ResLoss, CritTime, or UserGoal metric.
 %
 % INPUTS
-%   CIS                 : struct with two arrays, CIS.Node (1℅N) and CIS.Edge (1℅E).  Its contents depend on params.SystemType:
-%                        If ＆power＊:
-%                         CIS.Node fields:
-%                         每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%                         每 Voltage, ServiceZone, ClassName, SeismicFragilityType
-%                         CIS.Edge fields:
-%                        每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
-%                        每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
-%                        If ＆gas＊ or ＆water＊:
-%                         CIS.Node fields:
-%                        每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%                        每 Pressure, ServiceZone, ClassName, SeismicFragilityType
-%                        CIS.Edge fields:
-%                        每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
-%
-%   AttackParams      : Attacker model settings:
-%                         .AttackType  : 'LC' | 'NLC'
-%                         .Radius      : positive scalar (REQUIRED when AttackType='LC')
-%                         .Budget      : positive scalar (REQUIRED when AttackType='NLC')
-%                         .NodeAttackCost: N*1 vector specifying the cost to attack each node.(REQUIRED when AttackType='NLC')
-%                         .EdgeAttackCost: E*1 vector specifying the cost to attack each edge.(REQUIRED when AttackType='NLC')
-%   OperatorParams    : Operator/model settings:
-%                         .SystemType  : 'power' | 'gas' | 'water' | 'road'
-%                         .FunMetric   : 'Pop' | 'SDC' | 'LCS' | 'NPC' | 'MF' | 'DCPF'
-%
-%   TerminalZone     : 1xZ struct array describing zones/grids.
-%                      Required fields:
-%                        .Population (scalar, used as zone weight for UserGoal)
-%
-%   ResEvaParams      : Evaluation & restoration settings:
-%                         .ResMetric      : 'ResLoss' | 'CritTime' | 'UserGoal'
-%                         .RepairStrategy : 'Rule' | 'Heuristic' | 'Enumeration' | 'TimeIndexed' | 'ComponentIndexed'
-%                         .RepairCrew     : positive integer (number of repair teams)
-%                       If RepairStrategy = 'Rule':
-%                         .RuleType       : 'degree' | 'betweenness' | 'proximity'
-%                       If RepairStrategy = 'Heuristic':
-%                         .ScheMethod     : 'SA' | 'GA'
-%                       If ResMetric = 'CritTime':
-%                         .CritTimes      : 1℅K checkpoints (default [0 3 7 30 90])
-%                         .CritWeights    : 1℅K weights (normalized to sum=1)
-%
-%   ResilienceGoal   : (Only when ResMetric = 'UserGoal') numeric vector of length Z (>=0),
-%                      where each entry is the maximum tolerable outage duration (same units as time axis).
+%   CIS              : system structure with CIS.Node and CIS.Edge arrays.
+%   AttackParams     : attacker settings:
+%                      .AttackType     'LC' | 'NLC'
+%                      .Radius         positive scalar for LC
+%                      .Budget         positive scalar for NLC
+%                      .NodeAttackCost N-by-1 node costs for NLC
+%                      .EdgeAttackCost E-by-1 edge costs for NLC
+%                      .InvulnerableCom optional .Node/.Edge ID lists for LC or NLC
+%   OperatorParams   : operator settings:
+%                      .SystemType     'power' | 'gas' | 'water'
+%                      .FunMetric      'POP' | 'SDC' | 'LCS' | 'NPC' | 'MF' | 'DCPF'
+%   TerminalZone    : 1-by-Z zone structure array. Population is used as
+%                     the zone weight for UserGoal.
+%   ResEvaParams    : resilience and repair settings:
+%                      .ResMetric      'ResLoss' | 'CritTime' | 'UserGoal'
+%                      .RepairStrategy 'Rule' | 'Heuristic' | 'Enumeration' |
+%                                      'TimeIndexed' | 'ComponentIndexed'
+%                      .RepairCrew     positive integer number of repair teams
+%                      .RuleType       'degree' | 'betweenness' | 'proximity'
+%                                      when RepairStrategy='Rule'
+%                      .ScheMethod     'SA' | 'GA' when RepairStrategy='Heuristic'
+%                      .CritTimes      checkpoints in days for CritTime
+%                                      (default [0 3 7 30 90])
+%                      .CritWeights    weights with the same length as CritTimes
+%   ResilienceGoal  : required only for UserGoal. Z-element numeric vector
+%                     of maximum tolerable outage durations in days.
 %
 % OUTPUTS
-%   SysRes           : scalar for 'ResLoss', 'CritTime', and 'UserGoal' 〞 the mean across simulations.
-%                      (For 'ResLoss': mean normalized loss; for 'CritTime': mean weighted functionality;
-%                       for 'UserGoal': mean population-weighted goal satisfaction.)
-%
-%   ZoneRes          : Zx2 numeric matrix: [ZoneID, value], where value is the per-zone mean across simulations.
-%                      For 'ResLoss' : mean normalized loss per zone.
-%                      For 'CritTime': mean weighted functionality per zone.
-%                      For 'UserGoal': mean goal satisfaction per zone.
+%   SysRes          : scalar system result. ResLoss is normalized loss;
+%                     CritTime is weighted functionality; UserGoal is
+%                     population-weighted goal satisfaction.
+%   ZoneRes         : Z-by-2 matrix [ZoneID, zone-level metric value].
 
 %% Step 1: Validate inputs
 if nargin < 5
@@ -82,9 +56,9 @@ if strcmp(AttackParams.AttackType,'LC') && (~isfield(AttackParams,'Radius') || i
 end
 
 % ---- Validate OperatorParams ----
-validSystemTypes = {'power','gas','water','road'};
+validSystemTypes = {'power','gas','water'};
 if ~ismember(OperatorParams.SystemType, validSystemTypes)
-    error('Invalid OperatorParams.SystemType="%s". Allowed: power | gas | water | road', OperatorParams.SystemType);
+    error('Invalid OperatorParams.SystemType="%s". Allowed: power | gas | water', OperatorParams.SystemType);
 end
 
 % ---- Validate ResEvaParams ----
@@ -106,7 +80,7 @@ end
 switch ResEvaParams.ResMetric
     case 'UserGoal'
         if ~(nargin >= 6 && exist('ResilienceGoal','var') && ~isempty(ResilienceGoal))
-            error('ResMetric=UserGoal requires the 5th input ResilienceGoal.');
+            error('ResMetric=UserGoal requires the 6th input ResilienceGoal.');
         end
         Z = numel(TerminalZone);  % number of zones
         if ~isnumeric(ResilienceGoal) || ~isvector(ResilienceGoal) || numel(ResilienceGoal) ~= Z
@@ -116,33 +90,34 @@ switch ResEvaParams.ResMetric
             error('All entries of ResilienceGoal must be finite and >= 0.');
         end
     case 'CritTime'
-        if ~isfield(ResEvaParams,'CritTimes') || isempty(ResEvaParams.CritTimes) || ~isnumeric(ResEvaParams.CritTimes)
+        if ~isfield(ResEvaParams,'CritTimes') || isempty(ResEvaParams.CritTimes)
             ResEvaParams.CritTimes = [0, 3, 7, 30, 90];
         end
+        validateattributes(ResEvaParams.CritTimes, {'numeric'}, ...
+            {'real','vector','finite','nonnegative'}, mfilename, 'ResEvaParams.CritTimes');
         if ~isfield(ResEvaParams,'CritWeights') || isempty(ResEvaParams.CritWeights)
             ResEvaParams.CritWeights = ones(size(ResEvaParams.CritTimes));
-        else
-            if ~(isnumeric(ResEvaParams.CritWeights) && numel(ResEvaParams.CritWeights) == numel(ResEvaParams.CritTimes))
-                error('ResEvaParams.CritWeights must be numeric with the same length as ResEvaParams.CritTimes.');
-            end
         end
-        % normalize weights to sum = 1
+        validateattributes(ResEvaParams.CritWeights, {'numeric'}, ...
+            {'real','vector','finite','nonnegative','numel',numel(ResEvaParams.CritTimes)}, ...
+            mfilename, 'ResEvaParams.CritWeights');
+        if ~any(ResEvaParams.CritWeights)
+            error('ResEvaParams.CritWeights must contain at least one positive value.');
+        end
         ResEvaParams.CritWeights = ResEvaParams.CritWeights(:) / sum(ResEvaParams.CritWeights(:));
 end
 
 
-% RepairStrategy-specific requirements + SystemType每FunMetric compatibility
+% RepairStrategy-specific requirements and SystemType-FunMetric compatibility
 validStrategies = {'Rule','Heuristic','Enumeration','TimeIndexed','ComponentIndexed'};
 if ~ismember(ResEvaParams.RepairStrategy, validStrategies)
     error('Invalid ResEvaParams.RepairStrategy. Allowed: Rule | Heuristic | Enumeration | TimeIndexed | ComponentIndexed');
 end
 switch OperatorParams.SystemType
     case 'power'
-        allowedBase = {'DCPF','MF','Pop','SDC','LCS','NPC'};
+        allowedBase = {'DCPF','MF','POP','SDC','LCS','NPC'};
     case {'gas','water'}
-        allowedBase = {'MF','Pop','SDC','LCS','NPC'};
-    case 'road'
-        allowedBase = {'Pop','LCS','NPC'};
+        allowedBase = {'MF','POP','SDC','LCS','NPC'};
 end
 switch ResEvaParams.RepairStrategy
     case 'Rule'
@@ -164,9 +139,6 @@ switch ResEvaParams.RepairStrategy
     case {'Enumeration'}
         allowedFun = allowedBase;
     case {'TimeIndexed','ComponentIndexed'}
-        if strcmp(OperatorParams.SystemType,'road')
-            error('RepairStrategy="%s" does not support SystemType=road.', ResEvaParams.RepairStrategy);
-        end
         if strcmp(OperatorParams.SystemType,'power')
             allowedFun = {'DCPF','MF'};
         else
@@ -214,7 +186,7 @@ switch ResEvaParams.RepairStrategy
                 [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = HeuristicRepairSingleConnectivity(CIS, CISComDamgScenario, TerminalZone, ResEvaParams);
         end
     case 'Enumeration'
-        [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = EnumerationRepairSingleCIS(CIS, ComDamgScenario, TerminalZone, ResEvaParams);
+        [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = EnumerationRepairSingleCIS(CIS, CISComDamgScenario, TerminalZone, ResEvaParams);
     case 'TimeIndexed'
         switch OperatorParams.FunMetric
             case 'DCPF'
@@ -225,9 +197,9 @@ switch ResEvaParams.RepairStrategy
     case 'ComponentIndexed'
         switch OperatorParams.FunMetric
             case 'DCPF'
-                [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleDCPF(CIS, ComDamgScenario, TerminalZone, ResEvaParams);
+                [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleDCPF(CIS, CISComDamgScenario, TerminalZone, ResEvaParams);
             case 'MF'
-                [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleMF(CIS, ComDamgScenario, TerminalZone, ResEvaParams);
+                [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleMF(CIS, CISComDamgScenario, TerminalZone, ResEvaParams);
         end
 end
 
@@ -239,7 +211,7 @@ ZoneStateEvoAll=ZoneStateEvo;
 
 %% Step 4: resilience assessment based on the select ResMetric
 Z  = numel(TerminalZone);
-SysRes = nan(1,1);
+SysRes = struct;
 ZoneRes = nan(Z,2);
 ZoneRes(:,1)= ZoneStateEvoAll(:,1);
 
@@ -279,8 +251,8 @@ switch ResEvaParams.ResMetric
         t  = TimeAxisAll(:);
         for z = 1:Z
             gz = ZoneStateEvoAll(z,2:end).';
-            idx = find(round(gz) >= 1, 1, 'first');
-            ZoneRes(z,2) = double(t (idx) <= ResilienceGoal(z));
+            idx = find(gz >= 1 - 1e-9, 1, 'first');
+            ZoneRes(z,2) = ~isempty(idx) && t(idx) <= ResilienceGoal(z);
         end
         
         wZ = [TerminalZone.Population]' ./ max(sum([TerminalZone.Population]), eps);
@@ -292,47 +264,33 @@ end
 
 
 function AttackStrategy = SolveWorstCaseAttackSingle(CIS, AttackParams, OperatorParams, TerminalZone)
-% INTRODUCTION:
-%   Solve the worst-case attack selection for single systems under the
-%   specified attacker model and operator modeling choice. Supports
-%   location?constrained (LC) and non?location?constrained (NLC) attacker
-%   models.
-%
-% INPUT:
-%   AttackParams            : struct with fields
-%       .AttackType         : 'LC' | 'NLC'
-%       .Radius             : positive scalar (required when AttackType='LC')
-%       .InvulnerableCom    : optional [TotCom℅1] 0/1 vector; 1 means invulnerable
-%   OperatorParams          : struct with fields
-%       .SystemType         : 'power' | 'gas' | 'water' | 'road'
-%       .FunMetric          : 'Pop' | 'SDC' | 'LCS' | 'NPC' | 'MF' | 'DCPF'
-%   CIS                     : CIS structs (with .Node, .Edge)
-%
-% OUTPUT:
-%   AttackStrategy          : struct with fields .Node, .Edge (IDs to attack)
+% Solve the LC or NLC worst-case attack for one power, gas, or water system.
+% For NLC, AttackParams requires Budget, NodeAttackCost, and EdgeAttackCost.
+% For LC, AttackParams requires Radius and may provide InvulnerableCom.
 
 
 switch AttackParams.AttackType
     case 'NLC'
-        AttackParams.InvulNode=[];AttackParams.InvulEdge=[];AttackParams.InvalidStrategy=[];
+        if ~isfield(AttackParams,'InvulnerableCom'), AttackParams.InvulnerableCom = []; end
+        if ~isfield(AttackParams,'InvalidStrategy'), AttackParams.InvalidStrategy = []; end
         switch OperatorParams.FunMetric
             case 'LCS'
-                AttackStrategy = NLcAttackerRobLCSConnectivityOperator(CIS, AttackParams, OperatorParams);
+                AttackStrategy = NLcAttackerLCSConnectivityOperator(CIS, AttackParams, OperatorParams);
             case 'NPC'
-                AttackStrategy = NLcAttackerRobNPConnectivityOperator(CIS, AttackParams, OperatorParams);
-            case 'Pop'
-                AttackStrategy = NLcAttackerRobPopConnectivityOperator(CIS, AttackParams, OperatorParams);
+                AttackStrategy = NLcAttackerNPConnectivityOperator(CIS, AttackParams, OperatorParams);
+            case 'POP'
+                AttackStrategy = NLcAttackerPOPConnectivityOperator(CIS, AttackParams, OperatorParams);
             case 'SDC'
                 AttackStrategy = NLcAttackerSDConnectivityOperator(CIS, AttackParams, OperatorParams);
             case 'MF'
-                AttackStrategy = NLcAttackerRobMFOperator(CIS, AttackParams, OperatorParams);
+                AttackStrategy = NLcAttackerMFOperator(CIS, AttackParams, OperatorParams);
             case 'DCPF'
-                AttackStrategy = NLcAttackerRobDCPFOperator(CIS, AttackParams, OperatorParams);
+                AttackStrategy = NLcAttackerDCPFOperator(CIS, AttackParams, OperatorParams);
         end
         
     case 'LC'
         if ~isfield(AttackParams, 'InvulnerableCom') || isempty(AttackParams.InvulnerableCom)
-            AttackParams.InvulnerableCom = zeros(length(CIS.Node)+length(CIS.Edge), 1);
+            AttackParams.InvulnerableCom = [];
         end
         CIS = Spatial_3D(CIS);
         ComSet  =  maximal_component_set_3D(CIS, AttackParams.Radius);
@@ -342,14 +300,14 @@ switch AttackParams.AttackType
                 AttackStrategy = LcAttackerLCSConnectivityOperator(CIS, ComSet, OperatorParams, AttackParams, TerminalZone);
             case 'NPC'
                 AttackStrategy = LcAttackerNPConnectivityOperator(CIS, ComSet, OperatorParams, AttackParams, TerminalZone);
-            case 'Pop'
-                AttackStrategy = LcAttackerPopConnectivityOperator(CIS, ComSet, OperatorParams, AttackParams, TerminalZone);
+            case 'POP'
+                AttackStrategy = LcAttackerPOPConnectivityOperator(CIS, ComSet, OperatorParams, AttackParams, TerminalZone);
             case 'SDC'
                 AttackStrategy = LcAttackerSDConnectivityOperator(CIS, ComSet, OperatorParams, AttackParams, TerminalZone);
             case 'MF'
-                AttackStrategy = LcAttackerRobMFOperator(CIS, ComSet, OperatorParams, AttackParams, TerminalZone);
+                AttackStrategy = LcAttackerMFOperator(CIS, ComSet, OperatorParams, AttackParams, TerminalZone);
             case 'DCPF'
-                AttackStrategy = LcAttackerRobDCPFOperator(CIS, ComSet, OperatorParams, AttackParams, TerminalZone);
+                AttackStrategy = LcAttackerDCPFOperator(CIS, ComSet, OperatorParams, AttackParams, TerminalZone);
         end
 end
 end
@@ -362,12 +320,12 @@ function CISComDamgScenario = buildWorstCaseDamageScenario(CIS, ComDamgScenario,
 %   Hazus-style restoration parameters (Excel), with simple rules for pipes.
 %
 % INPUT:
-%   CIS             : system struct with arrays CIS.Node (1℅N), CIS.Edge (1℅E)
+%   CIS             : system struct with arrays CIS.Node (1-by-N), CIS.Edge (1-by-E)
 %   ComDamgScenario : struct with fields .Node (list of node IDs), .Edge (list of edge IDs)
 %   SystemType      : 'power' | 'gas' | 'water'
 %
 % OUTPUT:
-%   CISComDamgScenario : K℅4 numeric matrix, each row = [compType, compID, repairTime, system_type]
+%   CISComDamgScenario : K-by-4 numeric matrix, each row = [compType, compID, repairTime, system_type]
 %                        compType: 1=node, 2=edge; system_type: power=1, gas=2, water=3
 
 % Output rows: [compType, compID, repairTime, system_type]
@@ -404,13 +362,17 @@ for n = 1:length(ComDamgScenario.Node)
     
     % NOTE: assumes Node ID equals index; if not, adapt to your ID->index mapping.
     ComType = CIS.Node(compID).ClassName;
+    if isempty(ComType)
+        error(['Attacked node %d has an empty ClassName. Set CIS.Node(%d).ClassName ', ...
+            'to a component type listed in the RestorationParams sheet.'], compID, compID);
+    end
     
     % find matching restoration parameter by class name (first match)
     k = find(contains(ComType, {RestorationParams.Component}), 1);
-    if ~isempty(k)
-        k = k(1);
-        NodeDamgScenario(n,3) = RestorationParams(k).meanComplete;
+    if isempty(k)
+        error('No restoration parameters found for node %d with ClassName "%s".', compID, ComType);
     end
+    NodeDamgScenario(n,3) = RestorationParams(k).meanComplete;
     NodeDamgScenario(n,4) = SystemTypeTag;
 end
 

@@ -11,20 +11,20 @@ function [PowerSysFunLoss,WaterSysFunLoss, PowerComState, WaterComState, PowerZo
 %
 % INPUTS:
 %   PowerSystem, WaterSystem:
-%       struct with two fields, CIS.Node (1℅N) and CIS.Edge (1℅E).
+%       struct with two fields, CIS.Node (1 x N) and CIS.Edge (1 x E).
 %       PowerSystem
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%             每 Voltage, ServiceZone, ClassName, SeismicFragilityType
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
-%             每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%             - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
 %       WaterSystem:
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%             每 Pressure, ServiceZone, ClassName, SeismicFragilityType
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Pressure, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
 %
 %   PowerWaterInterdependency:
 %       A structure with fields:
@@ -32,14 +32,13 @@ function [PowerSysFunLoss,WaterSysFunLoss, PowerComState, WaterComState, PowerZo
 %           .WaterToPower: [WaterNodeID, PowerNodeID, TargetWaterFlow]
 %
 %   PowerComDamgScenario, WaterComDamgScenario:
-%        K℅2 matrix of damaged components:
+%        K x 2 matrix of damaged components:
 %        [DamageType (1=node, 2=edge), DamageComponentID]
 %
 %   TerminalZone : structure array defining spatial zone divisions.
 %
 %   params:
 %       A structure containing:
-%           - params.FunMetric: Functionality metric ('TotalDemand')
 %           - params.PowerNodeWeight: Vector (if not provided, defaults to ones)
 %           - params.WaterNodeWeight: Vector (if not provided, defaults to ones)
 %
@@ -57,16 +56,16 @@ function [PowerSysFunLoss,WaterSysFunLoss, PowerComState, WaterComState, PowerZo
 %     - PowerComState.Edge(:,2): The real flow of the edge after the disaster.
 %
 %   PowerZoneState, WaterZoneState:
-%       G℅2 matrix of zone-level functionality states, where G is the maximum zone ID:
+%       G x 2 matrix [Zone ID, service state], where G is numel(TerminalZone):
 % 
 %   CascadeTrace:
 %       Structure array recording the *entire* cascade evolution process.
-%       Each element CascadeTrace(r) corresponds to one cascade iteration (r = 1＃R).
+%       Each element CascadeTrace(r) corresponds to one cascade iteration (r = 1:R).
 %       Fields include:
 %         - PowerSysFunLoss, WaterSysFunLoss : System-level functionality losses at iteration r
 %         - PowerDemNode,  PowerGenNode      : Per-node demand and generation in power system
 %         - WaterDemNode,  WaterGenNode      : Per-node demand and generation in water system
-%         - PowerEdgeState,WaterEdgeState    : Per-edge flow magnitudes
+%         - PowerEdgeState,WaterEdgeState    : Per-edge signed flows
 %         - PowerToWater, WaterToPower       : Binary vectors (1=active, 0=failed) showing interdependency link states
 %         - PowerZoneState, WaterZoneState      : Zone-level service state.
 %% Step 1: Set default parameters if not provided
@@ -76,8 +75,9 @@ end
 if ~isfield(params, 'WaterNodeWeight')
     params.WaterNodeWeight = ones(size(WaterSystem.Node,2), 1);
 end
+flowTolerance = 1e-6;
 
-%% Step 2: Compute initial functionality for each system using the max flow model
+%% Step 2: Compute initial functionality using DCPF for power and max flow for water
 PowerParams = struct('SystemType', 'power', 'NodeWeight', params.PowerNodeWeight);
 WaterParams = struct('SystemType', 'water', 'NodeWeight', params.WaterNodeWeight);
 
@@ -113,7 +113,7 @@ while (powerCascadeFlag ||  waterCascadeFlag)
         for i = 1:length(uniqueWaterNodeIDs)
             waterNodeID = uniqueWaterNodeIDs(i);
             powerToWaterData = PowerWaterInterdependency.PowerToWater(PowerWaterInterdependency.PowerToWater(:, 2) == waterNodeID, :);
-            if all(PowerComState.Node(powerToWaterData(:, 1), 2) < powerToWaterData(:, 3))
+            if all(PowerComState.Node(powerToWaterData(:, 1), 2) < powerToWaterData(:, 3) - flowTolerance .* max(1, abs(powerToWaterData(:, 3))))
                 if ~ismember(waterNodeID, affectedWaterNodes)
                     waterCascadeFlag = true;
                     affectedWaterNodes = unique([affectedWaterNodes; waterNodeID]);
@@ -133,7 +133,7 @@ while (powerCascadeFlag ||  waterCascadeFlag)
         for i = 1:length(uniquePowerNodeIDs)
             powerNodeID = uniquePowerNodeIDs(i);
             waterToPowerData = PowerWaterInterdependency.WaterToPower(PowerWaterInterdependency.WaterToPower(:, 2) == powerNodeID, :);
-            if all(WaterComState.Node(waterToPowerData(:, 1), 2) < waterToPowerData(:, 3))
+            if all(WaterComState.Node(waterToPowerData(:, 1), 2) < waterToPowerData(:, 3) - flowTolerance .* max(1, abs(waterToPowerData(:, 3))))
                 if ~ismember(powerNodeID, affectedPowerNodes)
                     powerCascadeFlag = true;
                     affectedPowerNodes = unique([affectedPowerNodes; powerNodeID]);

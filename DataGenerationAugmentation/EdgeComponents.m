@@ -1,45 +1,43 @@
 function [edgeComponent, boundEdge] = EdgeComponents(edgeData, deleteEdgeIDSet)
-% EdgeComponents Identifies connected components in a network after edge deletion.
+% EdgeComponents Labels edge-connected components in an undirected network.
 %
 %   [edgeComponent, boundEdge] = EdgeComponents(edgeData, deleteEdgeIDSet)
 %
-%   This function computes the connected components of a network defined by
-%   edgeData after removing the edges specified in deleteEdgeIDSet.
+%   This function labels connected groups of edges using the node IDs in
+%   columns 2 and 3 of edgeData. Edges listed in deleteEdgeIDSet are marked
+%   as deleted. Their endpoint nodes are treated as boundaries and are not
+%   used to connect the remaining edges.
 %
 %   Input:
-%     edgeData - An MxN matrix, where each row corresponds to an edge and the
-%                columns are defined as follows:
-%                  1. EdgeID
-%                  2. FromNodeID
-%                  3. ToNodeID
-%                  4. Length
-%                  5. HighwayType
-%                  6. MaxSpeed
-%                  7. LineSeismicFragilityType
+%     edgeData - An MxN matrix, where each row corresponds to an edge.
+%                Column 2 contains the from-node ID and column 3 contains
+%                the to-node ID. Other columns are not used.
 %
-%     deleteEdgeIDSet - A vector containing the EdgeIDs of the edges to be deleted.
+%     deleteEdgeIDSet - Row indices of edges to mark as deleted. Use [] when
+%                       no edges are to be deleted.
 %
 %   Output:
 %     edgeComponent - A column vector (Mx1) where each entry is the component ID
 %                     assigned to the corresponding edge in edgeData. Deleted edges
 %                     are marked with a component ID of -1.
 %
-%     boundEdge     - A Kx3 matrix (if any boundaries are detected) that records
-%                     connections between the connected component and a deleted edge.
-%                     Each row is of the form:
-%                     [ComponentID, LocalNodeID, DeletedNodeID]
+%     boundEdge     - A Kx3 matrix describing remaining edges incident to
+%                     endpoint nodes of deleted edges. If exactly one endpoint
+%                     is a boundary node, a row has the form
+%                     [ComponentID, NonBoundaryNodeID, BoundaryNodeID]. If both
+%                     endpoints are boundary nodes, the row is
+%                     [ComponentID, FromNodeID, ToNodeID]. Returns [] when no
+%                     such rows are recorded.
 %
-%   The algorithm works by first marking the deleted edges and then performing a
-%   breadth-first search (BFS) on the remaining edges to assign component IDs.
-%   During the BFS, if an edge connects a node in a component with a deleted node,
-%   that connection is recorded in boundEdge.
+%   The algorithm marks the requested edge rows as -1 and then performs a
+%   breadth-first search (BFS) over the remaining edges. Edge direction is
+%   ignored: two remaining edges are connected when they share a node that is
+%   not an endpoint of a deleted edge. Encounters with boundary nodes are
+%   recorded in boundEdge.
 %
 %   Example:
 %       [edgeComp, bEdge] = EdgeComponents(edgeData, deleteEdgeIDSet);
 %
-%   Author: [Min Ouyang]
-%   Date: [2024-03-25]
-
     % Define column indices for clarity.
     FROM_NODE = 2;
     TO_NODE   = 3;
@@ -49,9 +47,9 @@ function [edgeComponent, boundEdge] = EdgeComponents(edgeData, deleteEdgeIDSet)
     % Initialize edge component assignments (0 means unvisited).
     edgeComponent = zeros(numEdges, 1);
     
-    % If there are deleted edges, mark them and record the affected nodes.
+    % Mark the requested edge rows and collect all their endpoint nodes.
     if ~isempty(deleteEdgeIDSet)
-        edgeComponent(deleteEdgeIDSet) = -1;  % Mark deleted edges.
+        edgeComponent(deleteEdgeIDSet) = -1;  % Mark deleted edge rows.
         deletedNodes = unique([edgeData(deleteEdgeIDSet, FROM_NODE); ...
                                edgeData(deleteEdgeIDSet, TO_NODE)]);
         % Preallocate boundEdge array (estimate: 5 rows per deleted edge).
@@ -107,18 +105,18 @@ function [edgeComponent, boundEdge] = EdgeComponents(edgeData, deleteEdgeIDSet)
                 end
             end
             
-            % Record boundary edges connecting to deleted nodes.
-            % Case 1: node1 is deleted and node2 is not.
+            % Record remaining edges incident to boundary nodes.
+            % Case 1: node1 is a boundary node and node2 is not.
             if ismember(node1, deletedNodes) && ~ismember(node2, deletedNodes)
                 boundEdgeCount = boundEdgeCount + 1;
                 boundEdge(boundEdgeCount, :) = [componentID, node2, node1];
             end
-            % Case 2: node2 is deleted and node1 is not.
+            % Case 2: node2 is a boundary node and node1 is not.
             if ~ismember(node1, deletedNodes) && ismember(node2, deletedNodes)
                 boundEdgeCount = boundEdgeCount + 1;
                 boundEdge(boundEdgeCount, :) = [componentID, node1, node2];
             end
-            % Case 3: both nodes are deleted.
+            % Case 3: both nodes are boundary nodes.
             if ismember(node1, deletedNodes) && ismember(node2, deletedNodes)
                 boundEdgeCount = boundEdgeCount + 1;
                 boundEdge(boundEdgeCount, :) = [componentID, node1, node2];

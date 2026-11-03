@@ -1,46 +1,35 @@
-function SeismicScenario = generateSeismicCascadeScenarioGivenZonePGA(TerminalZone, ZonePGA,quake_mag)
-% generateSeismicScenarioGivenPGA Generates seismic scenario intensities for urban zones.
+function SeismicScenario = generateSeismicCascadeScenarioGivenZonePGA(TerminalZone, ZonePGA, quake_mag)
+% generateSeismicCascadeScenarioGivenZonePGA Generates seismic cascade scenarios from zone PGA values.
 %
-%   SeismicScenario = generateSeismicScenarioGivenPGA(TerminalZone, ZonePGA)
+%   SeismicScenario = generateSeismicCascadeScenarioGivenZonePGA(TerminalZone, ZonePGA, quake_mag)
 %
 %   Inputs:
 %       TerminalZone: An array of structures defining the urban zones. Each element has:
-%           .clon       - Longitude of the centroid of the zone (optional)
-%           .clat       - Latitude of the centroid of the zone (optional)
+%           .ID         - Zone ID (optional; the structure index is used if absent)
 %           .X          - [Longitude values for each turning point along the zone boundary, NaN-terminated]
 %           .Y          - [Latitude values for each turning point along the zone boundary, NaN-terminated]
-%           .Type       - Land type of the zone
-%           .Population - Population count in the zone
+%           .LandslideSus, .LiquefactionSus, .WTD - Ground-failure input data
 %
 %       ZonePGA: An MxN matrix where:
-%           The first column is the ZoneID, and columns 2 through N are seismic intensity
-%           (PGA) values for that zone.
+%           The first column is the ZoneID, and columns 2 through N are PGA values (g).
+%       quake_mag: Scalar earthquake moment magnitude.
 %
 %   Output:
 %       SeismicScenario: An array of structures (one per zone) with the fields:
-%           .PGA                   - The seismic intensity (PGA) for the zone [columns 2:end of ZonePGA]
-%           .LateralSpreadingPGD   - The PGD (e.g., in cm) due to lateral spreading (derived from PGA)
-%           .VerticalSettlementPGD - The PGD due to vertical settlement (derived from PGA)
-%           .LandSlidePGD          - The PGD associated with landslide hazard (derived from PGA)
+%           .ID, .X, .Y            - Zone ID and boundary coordinates
+%           .PGA                   - PGA realizations for the zone (g)
+%           .LateralSpreadingPGD   - Lateral-spreading PGD (inches)
+%           .VerticalSettlementPGD - Probability-weighted settlement PGD (inches)
+%           .LandSlidePGD          - Landslide PGD (inches)
+%           .LandSlideProb         - Landslide probabilities for the PGA realizations
+%           .LiquefactionProb      - Liquefaction probabilities for the PGA realizations
 %
 %   Procedure:
-%       1. Check inputs; if TerminalZone is missing certain susceptibility fields (e.g. landslide_sus,
-%          Liquefaction_sus, or wtd), update it via integrateLandslideLiquefactionWtdInfo.
-%       2. Build a PGAsim matrix:
-%              Column 1: ZoneID (1:length(TerminalZone))'
-%              Column 2: Centroid longitude (TerminalZone.clon if available; otherwise, mean of TerminalZone.X)
-%              Column 3: Centroid latitude  (TerminalZone.clat if available; otherwise, mean of TerminalZone.Y)
-%              Columns 4:end: PGA values taken from ZonePGA(:,2:end)
-%       3. Define a default earthquake magnitude (e.g., 6.5) to be passed to the PGD calculation.
-%       4. Call calculateTerminalZonePGDgivenPGA with (TerminalZone, PGAsim, quake_mag) to obtain PGD values.
-%       5. For each zone z, assign:
-%              SeismicScenario(z).PGA = ZonePGA(z,2:end)
-%              SeismicScenario(z).LateralSpreadingPGD = latPGDsim(z,4:end)
-%              SeismicScenario(z).VerticalSettlementPGD = setPGDsim(z,4:end)
-%              SeismicScenario(z).LandSlidePGD = landPGDsim(z,4:end)
-%
-%   Author: [Your Name]
-%   Date: [Date]
+%       1. Check inputs. TerminalZone must already contain LandslideSus,
+%          LiquefactionSus, and WTD, prepared with integrateLandslideLiquefactionWtdInfo if needed.
+%       2. Match ZonePGA rows to TerminalZone IDs and extract the PGA matrix.
+%       3. Call calculateTerminalZonePGDgivenPGA with (TerminalZone, quake_mag, PGAsim).
+%       4. Store the PGA, PGD, and ground-failure probability realizations for each zone.
 
 %% Step 1: Input Checking and TerminalZone Update
 if isempty(TerminalZone)
@@ -49,49 +38,56 @@ end
 if isempty(ZonePGA)
     error('ZonePGA input is empty.');
 end
+if nargin < 3 || isempty(quake_mag) || ~isnumeric(quake_mag) || ...
+        ~isscalar(quake_mag) || ~isfinite(quake_mag)
+    error('quake_mag must be a finite numeric scalar.');
+end
 % Check if TerminalZone has necessary susceptibility fields.
-if ~isfield(TerminalZone, 'landslide_sus') || ~isfield(TerminalZone, 'Liquefaction_sus') || ~isfield(TerminalZone, 'wtd')
-    TerminalZone = integrateLandslideLiquefactionWtdInfo(TerminalZone);
+if ~isfield(TerminalZone, 'LandslideSus') || ~isfield(TerminalZone, 'LiquefactionSus') || ~isfield(TerminalZone, 'WTD')
+    error(['TerminalZone must contain LandslideSus, LiquefactionSus, and WTD. ' ...
+        'Call integrateLandslideLiquefactionWtdInfo with the three GeoTIFF paths before this function.']);
 end
 
-%% Step 2: Build PGAsim Matrix
+%% Step 2: Match Zone IDs and Extract the PGA Matrix
 numZones = length(TerminalZone);
-% PGAsim: column 1 = zone ID, column 2 = centroid longitude, column 3 = centroid latitude, columns 4:end = PGA values.
-PGAsim = zeros(numZones, size(ZonePGA,2));
-for z = 1:numZones
-    PGAsim(z,1) = z;
-    
-    % Centroid longitude:
-    if isfield(TerminalZone(z), 'clon') && ~isempty(TerminalZone(z).clon)
-        PGAsim(z,2) = TerminalZone(z).clon;
-    else
-        validX = TerminalZone(z).X(~isnan(TerminalZone(z).X));
-        PGAsim(z,2) = mean(validX);
-    end
-    
-    % Centroid latitude:
-    if isfield(TerminalZone(z), 'clat') && ~isempty(TerminalZone(z).clat)
-        PGAsim(z,3) = TerminalZone(z).clat;
-    else
-        validY = TerminalZone(z).Y(~isnan(TerminalZone(z).Y));
-        PGAsim(z,3) = mean(validY);
-    end
+if ~isnumeric(ZonePGA) || ~ismatrix(ZonePGA) || ...
+        size(ZonePGA,1) ~= numZones || size(ZonePGA,2) < 2
+    error('ZonePGA must contain one row per TerminalZone and at least one PGA column after ZoneID.');
 end
-% Assume that the rows of ZonePGA match the TerminalZone order.
-PGAsim(:,4:end) = ZonePGA(:,2:end);
+
+if isfield(TerminalZone, 'ID') && ...
+        all(arrayfun(@(zone) isnumeric(zone.ID) && isscalar(zone.ID), TerminalZone))
+    zoneIDs = [TerminalZone.ID]';
+else
+    zoneIDs = (1:numZones)';
+end
+
+if numel(unique(ZonePGA(:,1))) ~= numZones
+    error('ZonePGA ZoneIDs must be unique.');
+end
+[zoneFound, rowOrder] = ismember(zoneIDs, ZonePGA(:,1));
+if any(~zoneFound)
+    error('ZonePGA ZoneIDs must match the TerminalZone IDs.');
+end
+PGAsim = ZonePGA(rowOrder,2:end);
 
 %% Step 3: Calculate PGD Values Using a Helper Function
-% Define a default earthquake magnitude (you might refine this based on your scenario).
-[latPGDsim, setPGDsim, landPGDsim] = calculateTerminalZonePGDgivenPGA(TerminalZone, PGAsim, quake_mag);
+[landPGDsim, latPGDsim, setPGDsim, LandslideProb, LiquefactionProb] = calculateTerminalZonePGDgivenPGA(TerminalZone, quake_mag, PGAsim);
 
 %% Step 4: Build the SeismicScenario Structure
-SeismicScenario = repmat(struct('PGA', [], 'LateralSpreadingPGD', [], 'VerticalSettlementPGD', [], 'LandSlidePGD', []), numZones,1);
+SeismicScenario = repmat(struct('ID', [], 'X', [], 'Y', [], 'PGA', [], ...
+    'LateralSpreadingPGD', [], 'VerticalSettlementPGD', [], ...
+    'LandSlidePGD', [], 'LandSlideProb', [], 'LiquefactionProb', []), numZones,1);
 for z = 1:numZones
-    SeismicScenario(z).PGA = ZonePGA(z,2:end);  % PGA values for zone z
-    % It is assumed that the output from calculateTerminalZonePGDgivenPGA has PGD values starting from column 4.
-    SeismicScenario(z).LateralSpreadingPGD = latPGDsim(z,4:end);
-    SeismicScenario(z).VerticalSettlementPGD = setPGDsim(z,4:end);
-    SeismicScenario(z).LandSlidePGD = landPGDsim(z,4:end);
+    SeismicScenario(z).ID=zoneIDs(z);
+    SeismicScenario(z).X=TerminalZone(z).X;
+    SeismicScenario(z).Y=TerminalZone(z).Y;
+    SeismicScenario(z).PGA = PGAsim(z,:);
+    SeismicScenario(z).LandSlideProb = LandslideProb(z,:);
+    SeismicScenario(z).LiquefactionProb = LiquefactionProb(z,:);
+    SeismicScenario(z).LateralSpreadingPGD = latPGDsim(z,:);
+    SeismicScenario(z).VerticalSettlementPGD = setPGDsim(z,:);
+    SeismicScenario(z).LandSlidePGD = landPGDsim(z,:);
 end
 
 end

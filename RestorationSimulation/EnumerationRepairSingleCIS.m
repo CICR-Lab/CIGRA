@@ -4,24 +4,24 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = EnumerationRepairSingl
 % infrastructure system. Enumerates all permutations of damaged
 % components, builds a parallel repair schedule given a fixed number of
 % repair crews, evaluates the functionality trajectory using the selected
-% metric (Pop/SDC/LCS/NPC or MF/DCPF), and returns the schedule with the
+% metric (POP/SDC/LCS/NPC or MF/DCPF), and returns the schedule with the
 % minimal normalized resilience loss.
 %
 % INPUT:
-%   CIS                 : struct with two arrays, CIS.Node (1℅N) and CIS.Edge (1℅E).  Its contents depend on params.SystemType:
-%                        If ＆power＊:
+%   CIS                 : struct with two arrays, CIS.Node (1 x N) and CIS.Edge (1 x E). Its contents depend on params.SystemType:
+%                        If 'power':
 %                         CIS.Node fields:
-%                         每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%                         每 Voltage, ServiceZone, ClassName, SeismicFragilityType
+%                         - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%                         - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %                         CIS.Edge fields:
-%                        每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
-%                        每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
-%                        If ＆gas＊ or ＆water＊:
+%                        - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%                        - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
+%                        If 'gas' or 'water':
 %                         CIS.Node fields:
-%                        每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%                        每 Pressure, ServiceZone, ClassName, SeismicFragilityType
+%                        - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%                        - Pressure, ServiceZone, ClassName, SeismicFragilityType
 %                        CIS.Edge fields:
-%                        每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
+%                        - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
 %   CISComDamgScenario   : [Ndm x 4] matrix, each row = [DamageType, ComponentID, RepairTime, SysType]
 %                          DamageType: 1=node, 2=edge
 %                          ComponentID: node index (if 1) or edge index (if 2)
@@ -31,7 +31,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = EnumerationRepairSingl
 %   params             : Struct with fields
 %                        .SystemType      : 'power' | 'gas' | 'water' | 'road'
 %                        .RepairCrew      : positive integer, number of repair teams
-%                        .FunMetric       : 'Pop' | 'SDC' | 'LCS' | 'NPC' |'MF' | 'DCPF'
+%                        .FunMetric       : 'POP' | 'SDC' | 'LCS' | 'NPC' |'MF' | 'DCPF'
 %
 % OUTPUT:
 %   ResLoss     : [1x3] vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
@@ -40,8 +40,8 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = EnumerationRepairSingl
 %                 (row 1 is the pre-repair state at time=0)
 %   RepairSeq   : [Ndm x 5] matrix:
 %                 [DamageType, ComponentID, SysType, FinishTime, TeamID]
-%   ZoneStateEvo   : Z℅K numeric matrix of zone states at critical time points
-%                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%   ZoneStateEvo : [Z x (Ndm+2)] matrix: [ZoneID, initial service level,
+%                  service levels after each repair]
 
 %% Step 1: Default input validation
 validSystems = {'power','gas','water','road'};
@@ -52,11 +52,11 @@ end
 % Metric set
 switch params.SystemType
     case 'power'
-        allowedFunMetrics = {'Pop','SDC','LCS','NPC','MF','DCPF'};
+        allowedFunMetrics = {'POP','SDC','LCS','NPC','MF','DCPF'};
     case {'gas','water'}
-        allowedFunMetrics = {'Pop','SDC','LCS','NPC','MF'};
+        allowedFunMetrics = {'POP','SDC','LCS','NPC','MF'};
     case 'road'
-        allowedFunMetrics = {'Pop','LCS','NPC'};
+        allowedFunMetrics = {'POP','LCS','NPC'};
 end
 if ~isfield(params,'FunMetric') || ~ismember(params.FunMetric, allowedFunMetrics)
     error('Invalid params.FunMetric for system "%s". Allowed: %s', ...
@@ -78,7 +78,7 @@ end
 Ndm = size(CISComDamgScenario,1);
 if Ndm == 0
     switch params.FunMetric
-        case 'Pop',   sysfunc = @SinglePopConnectivity; tag=1;
+        case 'POP',   sysfunc = @SinglePOPConnectivity; tag=1;
         case 'SDC',   sysfunc = @SingleSDConnectivity; tag=1;
         case 'LCS',   sysfunc = @SingleLCSConnectivity; tag=1;
         case 'NPC',   sysfunc = @SingleNPConnectivity; tag=1;
@@ -89,7 +89,7 @@ if Ndm == 0
     SysFunsEvo = [0, baseSysFunLoss];
     RepairSeq = [];
     ResLoss = [0, 0, 0];
-    ZoneStateEvo=[(1:size(TerminalZone,2))',baseZoneState(:,tag)];
+    ZoneStateEvo=[(1:numel(TerminalZone))',baseZoneState(:,tag)];
     fprintf('[Info] No damaged components detected. No repair scheduling is required.\n');
     return
 end
@@ -104,20 +104,21 @@ All_seqs = perms(1:Ndm);
 All_seqs = sortrows(All_seqs,1:Ndm); % obtain all possible repair sequences
 Nseqs = size(All_seqs,1);
 %% Step 3: Find the optimal repair sequence
-bestLoss = inf; bestSys = []; bestSeq = []; bestZone=[];
+bestLoss = inf; bestRes = []; bestSys = []; bestSeq = []; bestZone=[];
 for i = 1 : Nseqs
     res_seq = CISComDamgScenario(All_seqs(i,:)',:);
     repairseq= computeRepairSequence(res_seq,RR);
     [sysfunsevo, res_loss, zoneevo] = computeRestorationCurveSingle(CIS,repairseq,CISComDamgScenario,TerminalZone,params);
     if res_loss(1) < bestLoss
         bestLoss = res_loss(1);
+        bestRes = res_loss;
         bestSys = sysfunsevo;
         bestSeq = repairseq;
         bestZone = zoneevo;
     end
 end
 % Outputs
-ResLoss = res_loss;
+ResLoss = bestRes;
 SysFunsEvo= bestSys;
 RepairSeq = bestSeq;
 ZoneStateEvo= bestZone;
@@ -132,10 +133,10 @@ function [SysFunsEvo, ResLoss, ZoneStateEvo] = computeRestorationCurveSingle(CIS
 %    SysFunsEvo -  [time stamps, normalized functionality drop at each
 %                  time, post-disaster functionality at each time, pre-disaster functionality]
 %    ResLoss    -  [NormLoss, RealRes, ExpectedRes]
-%    ZoneStateEvo - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%    ZoneStateEvo - [ZoneID, initial service level, service levels after each repair]
 
 switch params.FunMetric
-    case 'Pop',   sysfunc = @SinglePopConnectivity; tag=1;
+    case 'POP',   sysfunc = @SinglePOPConnectivity; tag=1;
     case 'SDC',   sysfunc = @SingleSDConnectivity; tag=1;
     case 'LCS',   sysfunc = @SingleLCSConnectivity; tag=1;
     case 'NPC',   sysfunc = @SingleNPConnectivity; tag=1;
@@ -146,8 +147,8 @@ end
 Ndm = size(CISComDamgScenario,1);
 SysFunsEvo = zeros(Ndm+1,4);
 SysFunsEvo(2:end,1) = RepairSeq(:,4);
-ZoneStateEvo = nan(numel(TerminalZone), Ndm+1);
-ZoneStateEvo(:,1)=(1:size(TerminalZone,2))';
+ZoneStateEvo = nan(numel(TerminalZone), Ndm+2);
+ZoneStateEvo(:,1)=(1:numel(TerminalZone))';
 
 [SysFunLoss, ~, ZoneState] = sysfunc(CIS, CISComDamgScenario, params, TerminalZone);
 SysFunsEvo(1,2:4) = SysFunLoss;

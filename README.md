@@ -1,126 +1,49 @@
-### ⭐ Overview
+# CIGRA
 
+CIGRA (Critical Infrastructure Generation and Resilience Analysis) is a MATLAB toolbox that synthesizes or augments electric power, water, gas, and road networks from population maps and optional road data. Its eight modules connect network generation and augmentation, seismic hazard and component-damage modeling, worst-case disruption identification, functionality-loss calculation, restoration simulation, multiscale resilience evaluation, resilience-enhancement exploration, and visualization in an end-to-end workflow for decision-relevant “what-if” comparisons.
 
+## 🚀 Get started
 
-CIGRA is an open-source MATLAB toolbox designed for end-to-end resilience analysis of critical infrastructure systems (CISs), including:
+The [`Examples`](Examples) folder contains runnable scripts for each module. In MATLAB, set the current folder to the repository root and try:
 
+```matlab
+addpath(genpath(pwd));
+run(fullfile('Examples','FunctionalityLossCalculation', ...
+    'exampleSingleConnectivityModel.m'));
+```
 
+This example maps post-disaster network and zone functionality. For a flow model, see [`exampleSingleFlowModel.m`](Examples/FunctionalityLossCalculation/exampleSingleFlowModel.m). Other starting points include [seismic damage](Examples/SeismicCascadeComDamg), [restoration](Examples/RestorationSimulation), [resilience evaluation](Examples/MultiScaleResEvaluation), and [retrofit and protection](Examples/ResEnhancementExploration).
 
-* Electric Power Systems (EPS)
-* Water Supply Systems (WSS)
-* Natural Gas Systems (NGS)
-* Road Transport Systems (RTS)
+## What is included
 
+| Module | Purpose |
+| --- | --- |
+| [`DataGenerationAugmentation`](DataGenerationAugmentation) | Generate networks and interdependencies |
+| [`SeismicCascadeComDamg`](SeismicCascadeComDamg) | Simulate seismic hazards and component damage |
+| [`FunctionalityLossCalculation`](FunctionalityLossCalculation) | Connectivity, flow, and cascade models |
+| [`WorstCaseDisruption`](WorstCaseDisruption) | Localized and nonlocalized disruption analysis |
+| [`RestorationSimulation`](RestorationSimulation) | Repair scheduling and recovery trajectories |
+| [`MultiScaleResEvaluation`](MultiScaleResEvaluation) | System and zone resilience evaluation |
+| [`ResEnhancementExploration`](ResEnhancementExploration) | Retrofit and protection strategies |
+| [`Visualization`](Visualization) | Network maps and process animations |
 
+## Requirements
 
-The toolbox enables users to generate realistic CIS networks, simulate multi-hazard cascades, evaluate functionality loss, model restoration processes, compute system-level and zone-level resilience metrics, and explore resilience enhancement strategies.
+MATLAB; **Mapping Toolbox** for spatial data; **Statistics and Machine Learning Toolbox** for sampling. Flow and optimization functions require the **IBM ILOG CPLEX MATLAB interface** (`cplexmilp`, `cplexoptimset`).
 
+## 🌍 External data
 
+Large global rasters are not included in the GitHub repository. Download the data you need from the original providers and put the TIFFs at these paths relative to the repository root:
 
-CIGRA was developed for researchers, practitioners, and policy analysts working in urban resilience, infrastructure planning, disaster risk management, and interdependent network modeling.
+| Dataset | Required file |
+| --- | --- |
+| [GHSL GHS-POP, 2020, R2023A, WGS84, 30 arc-second](https://human-settlement.emergency.copernicus.eu/ghs_pop2023.php) | `ExternalData/GHS_POP_E2020_GLOBE_R2023A_4326_30ss_V1_0/GHS_POP_E2020_GLOBE_R2023A_4326_30ss_V1_0.tif` |
+| [NASA global landslide susceptibility](https://github.com/nasa/LHASA#data-files) | `ExternalData/global_landslide/global-landslide-susceptibility-map-2-27-23.tif` |
+| [Global liquefaction susceptibility](https://doi.org/10.5281/zenodo.2583746) | `ExternalData/global_liquefaction/liquefaction_v1_deg_wgs84.tif` |
+| [GLOBGM steady-state water-table depth](https://github.com/UU-Hydro/GLOBGM#input-and-output-data-files-including-yoda-access) | `ExternalData/global_wtd/globgm-wtd-ss.tif` |
 
+The population raster is used by network-generation examples; the other three are used by `exampleSeismicHazardCascade.m`. Examples based on precomputed [`Examples/Shelby`](Examples/Shelby) scenarios do not need these global rasters.
 
+## Citation
 
-👉 GitHub Repository: https://github.com/CICR-Lab/CIGRA
-
-👉 Preprint / Paper: An Open-source MATLAB Toolbox for Critical Infrastructure Generation and Resilience Analysis (CIGRA)
-
-
-
-### 🎯 Key Features
-
-
-
-CIGRA integrates eight major modules, forming a complete workflow from data generation to hazard simulation, functionality assessment, and resilience optimization:
-
-
-
-1. CIS Data Generation \& Augmentation
-
-
-
-* Build synthetic EPS, NGS, WSS, and RTS networks from:
-* Population distribution datasets
-* Road network (OSM) or fully synthetic road networks
-* Assign realistic component attributes: demand, flow, capacity, susceptance, pressure, diameter, etc.
-* Automatically generate physical, logical, and geographical interdependencies across systems.
-
-
-
-2. Hazard Cascade \& Component Damage Scenario Generation
-
-
-
-* Supports multi-hazard seismic modeling:
-* PGA, SA, liquefaction PGD, landslide PGD
-* Converts zone-level intensities to component damage using HAZUS-based fragility curves.
-* Generates repair times, damage states, and probabilistic hazard realizations.
-
-
-
-3\.  Worst-Case Disruption Identification
-
-
-
-* Supports both:
-* Localized attacks (disk-based disruption)
-* Non-localized attacks (combinatorial disruption)
-* Identifies the worst-case component sets using:
-* Connectivity models
-* Max-flow / DC power flow models
-* MILP-based attacker–operator formulations
-
-
-
-4\. Functionality Loss Calculation
-
-
-
-* Supports multiple operator models:
-* Connectivity-based (LCS, SDC, NPC, POP)
-* Flow-based: Max-flow for WSS/NGS； DC power flow (DCPF) for EPS
-* Two operation paradigms: Centralized flow redispatch；Decentralized cascading simulation
-
-
-
-5\. Restoration Simulation
-
-
-
-* Rule-based repair sequencing (degree, betweenness, proximity)
-* Optimization-based scheduling: Component-indexed MILP；Time-indexed MILP；Genetic algorithm \& simulated annealing heuristics
-* Generates restoration trajectories and functionality recovery curves.
-
-
-
-6\. Multi-scale Resilience Evaluation
-
-
-
-* System-level and zone-level indicators: Resilience loss (RL)；Critical-time resilience (RCT)；Goal satisfaction rate (RG)
-* Supports Monte Carlo uncertainty propagation.
-
-
-
-7\. Resilience Enhancement Exploration
-
-
-
-* What-if analyses:
-* Centralized vs decentralized operations
-* Rule-based vs optimization-based repair
-* Cross-system dependence configurations
-* Optimization-based enhancement:
-* Defender–Attacker–Operator (DAO) hardening optimization
-* Stochastic retrofit planning
-
-
-
-8\. Visualization
-
-
-
-* 2D/3D mapping of CIS networks
-* Cascading failure animation
-* Hazard maps and zone-level resilience visualizations
-* Restoration dynamics with time sliders
+Zhang, Y., Ma, J., Li, Z., Zhang, F., Du, C., Xu, M., & Ouyang, M. (2026). [An Open-source Toolbox for Critical Infrastructure Generation and Resilience Analysis with Decision-Relevant Applications](https://doi.org/10.1016/j.ress.2026.113620). *Reliability Engineering & System Safety*, 113620.

@@ -8,50 +8,48 @@ function [SysFunLoss, ComState, ZoneState] = SingleNPConnectivity(CIS, CISComDam
 % event.
 %
 % INPUT:
-% CIS 每 struct with two arrays, CIS.Node (1℅N) and CIS.Edge (1℅E).  Its contents depend on params.SystemType:
-%     If ＆power＊:
+% CIS - struct with two arrays, CIS.Node (1xN) and CIS.Edge (1xE).  Its contents depend on params.SystemType:
+%     If 'power':
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Voltage, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
+%             - Voltage, ServiceZone, ClassName, SeismicFragilityType  
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage, 
-%             每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType  
-%     If ＆gas＊ or ＆water＊:
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage, 
+%             - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType  
+%     If 'gas' or 'water':
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Pressure, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
+%             - Pressure, ServiceZone, ClassName, SeismicFragilityType  
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType  
-%     If ＆road＊:
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType  
+%     If 'road':
 %         CIS.Node fields:
-%             每 ID, Longitude, Latitude, ServedPopulation, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, Longitude, Latitude, ServedPopulation, ServiceZone, ClassName, SeismicFragilityType  
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, EdgeType=, MaxSpeed, X, Y, ClassName, SeismicFragilityType  
+%             - ID, FromNodeID, ToNodeID, Length, EdgeType, MaxSpeed, X, Y, ClassName, SeismicFragilityType  
 %
-%   CISComDamgScenario 每 K℅2 matrix of damaged components:
+%   CISComDamgScenario - Kx2 matrix of damaged components:
 %         [DamageType (1=node, 2=edge), DamageComponentID]
-%   params 每 struct with:
+%         Component IDs are used as 1-based node or edge indices.
+%   params - struct with:
 %         SystemType: 'power' | 'gas' | 'water' | 'road'
-%         NodeWeight:  N℅1 vector (defaults to ones if missing)
+%         NodeWeight:  Nx1 vector (defaults to ones if missing)
 %   TerminalZone : structure array defining spatial zone divisions. 
 %
 % OUTPUT:
-%   SysFunLoss 每 1℅3 vector of system functionality loss results:
-%     SysFunLoss(1) 每 Normalized functionality drop: a fraction (0 to 1) representing the system＊s loss in functionality 
+%   SysFunLoss - 1x3 vector of system functionality loss results:
+%     SysFunLoss(1) - Normalized functionality drop: a fraction (0 to 1) representing the system's loss in functionality 
 %                      after the disaster, relative to its pre-disaster state.
-%     SysFunLoss(2) 每 Post-disaster functionality: the total functionality of the system after the disaster, 
-%                      as a fraction of the original (pre-disaster) value.
-%     SysFunLoss(3) 每 Pre-disaster functionality: the total functionality of the system before the disaster, 
-%                      as a baseline for comparison.
+%     SysFunLoss(2) - Post-disaster weighted mean NPC metric value.
+%     SysFunLoss(3) - Pre-disaster weighted mean NPC metric value.
 %
-%   ComState 每 N℅2 matrix of node-level functionality states:
-%     ComState(:,1) 每 Post-disaster functionality state for each node, with values indicating the operational state of each node 
-%                     after the disaster (1 = fully functional, 0 = non-functional, or values in between for partial functionality).
-%     ComState(:,2) 每 Pre-disaster functionality state for each node, with  values representing the operational state of each node 
-%                     before the disaster (typically 1 for all nodes).
-%   ZoneState     每 G℅2 matrix of zone-level functionality states, where G is the maximum zone ID referenced by CIS.Node.ServiceZone(:,1):
-%       ZoneState(:,1) 每 Post-disaster functionality state for each zone
-%       ZoneState(:,2) 每 Pre-disaster functionality state for each zone
+%   ComState - Nx2 matrix of node-level functionality states:
+%     ComState(:,1) - Post-disaster fraction of the other N-1 nodes reachable from each node.
+%     ComState(:,2) - Pre-disaster fraction of the other N-1 nodes reachable from each node.
+%   ZoneState     - Gx2 matrix of zone-level functionality states, where G is numel(TerminalZone):
+%       ZoneState(:,1) - Post-disaster functionality state for each zone
+%       ZoneState(:,2) - Pre-disaster functionality state for each zone
+%       Unmapped zones remain NaN; if several nodes map to one zone, the maximum node state is used.
 
 
 %% Step 1: Validate input parameters and set defaults
@@ -67,14 +65,14 @@ validSystems = {'power', 'gas', 'water', 'road'};
 if ~ismember(params.SystemType, validSystems)
     error('Invalid SystemType. Choose from "power", "gas", "water", or "road".');
 end
-%% Step 2: Construct the topological graph and remove damaged components
+%% Step 2: Construct the topological graph and isolate damaged components
 % Create pre-disaster network graph
 G_original = graph([CIS.Edge.FromNodeID], [CIS.Edge.ToNodeID]);
 
 % Create post-disaster network graph
 G_damaged = graph([CIS.Edge.FromNodeID], [CIS.Edge.ToNodeID]);
 
-% Remove damaged nodes and edges
+% Identify damaged nodes and edges
 if ~isempty(CISComDamgScenario)
     damagedNodes = CISComDamgScenario(CISComDamgScenario(:,1) == 1, 2);
     damagedEdges = CISComDamgScenario(CISComDamgScenario(:,1) == 2, 2);
@@ -84,9 +82,12 @@ else
 end
 
 % Step 2.1: Remove damaged edges
-G_damaged = rmedge(G_damaged, damagedEdges); % Remove damaged edges
+damagedFromNodes = [CIS.Edge(damagedEdges).FromNodeID];
+damagedToNodes = [CIS.Edge(damagedEdges).ToNodeID];
+damagedEdgeRows = findedge(G_damaged, damagedFromNodes, damagedToNodes);
+G_damaged = rmedge(G_damaged, damagedEdgeRows); % Remove damaged edges
 
-% Step 2.2: Remove edges connected to damaged nodes
+% Step 2.2: Isolate damaged nodes by removing their incident edges
 for i = 1:length(damagedNodes)
     nodeID = damagedNodes(i);
     edgesConnectedToNode = find(G_damaged.Edges.EndNodes(:,1) == nodeID | G_damaged.Edges.EndNodes(:,2) == nodeID);
@@ -120,7 +121,7 @@ function [SysFunLoss, ComState] = calculateFunctionality(System, G, NodeWeight)
 %   ComState   - An N x 1 vector representing the node-level functionality state
 
 N = size(System.Node,2);
-ComState = zeros(N, 1); % Column 1: Post-disaster functionality, Column 2: Pre-disaster functionality
+ComState = zeros(N, 1); % Node-level functionality for the graph supplied to this helper
 
 % system functionality
 % NPC: Node Pair Connectivity Metric.
@@ -129,7 +130,7 @@ for i = 1:N
     reachable_nodes = setdiff(reachableNodes(i, G), i);
     ComState(i, 1) = numel(reachable_nodes) / (N - 1);
 end
-SysFunLoss = mean(ComState(:,1) .* NodeWeight);
+SysFunLoss = sum(ComState(:,1) .* NodeWeight) / sum(NodeWeight);
 
 
 end

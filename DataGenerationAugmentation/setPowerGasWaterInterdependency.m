@@ -1,97 +1,85 @@
 function [NewPowerSystem, NewGasSystem, NewWaterSystem, PowerToWater, WaterToPower, PowerToGas, GasToPower] = setPowerGasWaterInterdependency(PowerSystem, GasSystem, WaterSystem, params)
-% setPowerGasWaterInterdependency Sets interdependencies among power, gas, and water systems.
+%SETPOWERGASWATERINTERDEPENDENCY Set power-gas-water interdependencies.
 %
 %   [NewPowerSystem, NewGasSystem, NewWaterSystem, PowerToWater, WaterToPower, PowerToGas, GasToPower] = ...
 %         setPowerGasWaterInterdependency(PowerSystem, GasSystem, WaterSystem, params)
 %
 %   Inputs:
-%       PowerSystem: Structure with Node fields including:
-%           NodeID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, ...
-%           Longitude, Latitude, ServedPopulation, Voltage, SeismicFragilityType, ServiceZone (structure array with field ZoneSet = [TerminalZoneID, RequiredDemand])
-%       Structure with Edge fields including:
-%           EdgeID, FromNodeID, ToNodeID, Length, RealFlow, MaxFlow, ...
-%                       Susceptance, Voltage, LineSeismicFragilityType, X and Y;
+%       PowerSystem - Structure containing Node and Edge structure arrays.
+%           Required Node fields are ID, Longitude, Latitude, RealDemand,
+%           TargetDemand, RealGeneration, and MaxGeneration. Required Edge
+%           fields are FromNodeID, ToNodeID, Length, Susceptance, RealFlow,
+%           and Capacity.
+%       GasSystem - Structure containing Node and Edge structure arrays.
+%           Required Node fields are ID, Longitude, Latitude, RealDemand,
+%           TargetDemand, RealGeneration, and MaxGeneration. Required Edge
+%           fields are FromNodeID, ToNodeID, RealFlow, and Capacity.
+%       WaterSystem - Structure containing Node and Edge structure arrays.
+%           Required Node fields are ID, Longitude, Latitude, RealDemand,
+%           TargetDemand, RealGeneration, and MaxGeneration. Required Edge
+%           fields are FromNodeID, ToNodeID, RealFlow, and Capacity.
+%       params - Structure with the following fields:
+%           PowerdemandFromGas - Power required by each selected gas node
+%               in MW (default: 0.005 MW).
+%           numGasToPowerLinks - Required number of gas-to-power links.
+%           numPowerToGasLinks - Required number of power-to-gas links.
+%           GasToPowerConversionRatio - Electrical output per gas flow in
+%               MW/(m^3/h) (default: 0.004 MW/(m^3/h)).
+%           PowerdemandFromWater - Power required by each selected water
+%               node in MW (default: 0.005 MW).
+%           WaterDemandFromPower - Water required by each selected power
+%               node in m^3/h (default: 0.5 m^3/h).
+%           numWaterToPowerLinks - Required number of water-to-power links.
+%           numPowerToWaterLinks - Required number of power-to-water links.
 %
-%       GasSystem: Structure with fields:
-%           NodeData = [NodeID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, ...
-%                       Longitude, Latitude, ServedPopulation, Pressure, SeismicFragilityType, ServiceZone = structure array with field ZoneSet = [TerminalZoneID, RequiredDemand];
-%           EdgeData = [EdgeID, FromNodeID, ToNodeID, Length, RealFlow, MaxFlow, ...
-%                       Diameter, LineSeismicFragilityType,X and Y];
-%
-%       WaterSystem: Structure with fields:
-%           NodeData = [NodeID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, ...
-%                       Longitude, Latitude, ServedPopulation, Pressure, SeismicFragilityType, ServiceZone = structure array with field ZoneSet = [TerminalZoneID, RequiredDemand];
-%           EdgeData = [EdgeID, FromNodeID, ToNodeID, Length, RealFlow, MaxFlow, ...
-%                       Diameter, LineSeismicFragilityType,X and Y];
-%
-%       params: Structure with interdependency parameters:
-%           % For power-gas interdependency:
-%           params.PowerdemandFromGas        - Required power (kW) for each gas node needing electricity.
-%           params.numGasToPowerLinks        - Number of interdependency links from gas node to power node.
-%           params.numPowerToGasLinks        - Number of interdependency links from power node to gas node.
-%           params.GasToPowerConversionRatio - Conversion ratio (MW per m^3/h) for gas-fired generation.
-%
-%           % For power-water interdependency:
-%           params.PowerdemandFromWater      - Required power (kW) for each water node needing electricity.
-%           params.WaterDemandFromPower      - Required water demand (m^3/h) for each power node needing water for cooling.
-%           params.numWaterToPowerLinks      - Number of interdependency links from water node to power node.
-%           params.numPowerToWaterLinks      - Number of interdependency links from power node to water node.
+%       CIGRA-generated systems use consecutive node IDs satisfying
+%       Node(n).ID == n. This numbering is required by this function.
 %
 %   Outputs:
-%       NewPowerSystem: Updated power system (same structure as PowerSystem).
-%       NewGasSystem:   Updated gas system (same structure as GasSystem).
-%       NewWaterSystem: Updated water system (same structure as WaterSystem).
-%
-%       PowerToWater:   [PowerNodeID, WaterNodeID, Required_Power_Demand] for water nodes needing power.
-%       WaterToPower:   [WaterNodeID, PowerNodeID, Required_Water_Demand] for power nodes needing water.
-%       PowerToGas:     [PowerNodeID, GasNodeID, Required_Power_Demand] for gas nodes needing power.
-%       GasToPower:     [GasNodeID, PowerNodeID, Conversion_Ratio, Required_Gas_Flow, Required_Max_Gas_Flow] for gas-fired generation.
+%       NewPowerSystem - Power system with updated demand, generation,
+%           line flow, and line capacity.
+%       NewGasSystem - Gas system with updated demand, generation, pipe
+%           flow, capacity, and source capacity.
+%       NewWaterSystem - Water system with updated demand, generation, pipe
+%           flow, and pipe capacity.
+%       PowerToWater - Rows are [PowerNodeID, WaterNodeID,
+%           RequiredPowerDemand_MW].
+%       WaterToPower - Rows are [WaterNodeID, PowerNodeID,
+%           RequiredWaterDemand_m3_per_h].
+%       PowerToGas - Rows are [PowerNodeID, GasNodeID,
+%           RequiredPowerDemand_MW].
+%       GasToPower - Rows are [GasNodeID, PowerNodeID,
+%           ConversionRatio_MW_per_m3_per_h, RequiredGasFlow_m3_per_h,
+%           RequiredMaxGasFlow_m3_per_h]. The fifth column is reported as
+%           link information and is not used in the max-flow calculation.
 %
 %   Procedure:
-%       1. Set default parameter values if missing (using 20% default link selection if not provided).
-%       2. For power-gas interdependency:
-%             - Randomly select a subset of power nodes (with nonzero generation) and for each,
-%               find the nearest gas node. Compute:
-%                   Required_Gas_Flow = RealGeneration * GasToPowerConversionRatio,
-%                   Required_Max_Gas_Flow = MaxGeneration * GasToPowerConversionRatio.
-%               These links form GasToPower.
-%             - Randomly select a subset of gas nodes (preferably with nonzero demand) and for each,
-%               find the nearest power node. Assign required power = params.PowerdemandFromGas.
-%               These links form PowerToGas.
-%
-%       3. For power-water interdependency:
-%             - Randomly select a subset of power nodes (with nonzero generation) and for each,
-%               find the nearest water node and assign required water demand = params.WaterDemandFromPower.
-%               These links form WaterToPower.
-%             - Randomly select a subset of water nodes (preferably with nonzero demand) and for each,
-%               find the nearest power node and assign required power = params.PowerdemandFromWater.
-%               These links form PowerToWater.
-%
-%       4. Update the systems:
-%             - For NewPowerSystem: add extra power demand from both PowerToGas and PowerToWater links,
-%               then run DC power flow (dc_pf) to update flows.
-%             - For NewGasSystem: add extra gas demand from GasToPower links and update flows via a maxflow procedure.
-%             - For NewWaterSystem: add extra water demand from WaterToPower links and update flows via a maxflow procedure.
-%
-%   Author: [Your Name]
-%   Date: [Date]
+%       1. Set optional parameter defaults and check required link counts.
+%       2. Create power-gas links by randomly selecting gas nodes and
+%          power nodes with positive generation capacity. Connect each
+%          selected node to the nearest eligible demand node.
+%       3. Create power-water links using the same selection principle.
+%       4. Add dependency power demand to RealDemand and TargetDemand, then
+%          run DC power flow.
+%       5. Add gas and water dependency demands and solve separate
+%          maximum-flow problems. Pipe capacities increase by 20% per
+%          iteration until total target demand is met.
 
 %% Step 0: Set default parameter values if missing
 
 % --- For power-gas ---
 if ~isfield(params, 'PowerdemandFromGas') || isempty(params.PowerdemandFromGas)
-    params.PowerdemandFromGas = 0.005;  % default 5 kW per gas node requiring power
+    params.PowerdemandFromGas = 0.005;  % MW (5 kW) per gas node requiring power
 end
-% For gas-to-power links, default number is 20% of power nodes with generation.
+% The number of gas-to-power links is required.
 if ~isfield(params, 'numGasToPowerLinks') || isempty(params.numGasToPowerLinks)
     error('The number of links from Gas system to Power system is required.');
 end
-% For power-to-gas links, default number is 20% of gas nodes.
+% The number of power-to-gas links is required.
 if ~isfield(params, 'numPowerToGasLinks') || isempty(params.numPowerToGasLinks)
     error('The number of links from Power system to Gas system is required.');
 end
-% A typical empirical value is about 0.004 MW per m³/h. In other words, under typical operating conditions a gas-fired generator produces roughly 4 kW of electrical power per m³/h of natural gas flow. This implies that around 250 m³/h of natural gas is needed to produce 1 MW of electricity.
-% This estimate is derived by considering that natural gas has an energy content on the order of 35 MJ/m³ and that the overall efficiency of gas-fired power plants is in the range of 35–40%. Keep in mind that actual conversion ratios can vary with technology and operating conditions.
+% A typical empirical value is about 0.004 MW per (m^3/h). 
 if ~isfield(params, 'GasToPowerConversionRatio') || isempty(params.GasToPowerConversionRatio)
     params.GasToPowerConversionRatio = 0.004; % default: 0.004 MW per (m^3/h)
     disp('The conversion ratio from gas to power is missing, and a default value 0.004 is set')
@@ -99,17 +87,16 @@ end
 
 % --- For power-water ---
 if ~isfield(params, 'PowerdemandFromWater') || isempty(params.PowerdemandFromWater)
-    params.PowerdemandFromWater = 0.005;  % default power demand (kW) for a water node
+    params.PowerdemandFromWater = 0.005;  % MW (5 kW) per water node requiring power
 end
 if ~isfield(params, 'WaterDemandFromPower') || isempty(params.WaterDemandFromPower)
-    params.WaterDemandFromPower = 0.5; % default water demand (m³/h) for a power node
+    params.WaterDemandFromPower = 0.5; % default water demand (m^3/h) for a power node
 end
-% Determine number of interdependency links if not provided.
-% For water-to-power links (power nodes needing water)
+% The number of water-to-power links is required.
 if ~isfield(params, 'numWaterToPowerLinks') || isempty(params.numWaterToPowerLinks)
     error('The number of links from Water system to Power system is required.');
 end
-% For power-to-water links (water nodes needing power)
+% The number of power-to-water links is required.
 if ~isfield(params, 'numPowerToWaterLinks') || isempty(params.numPowerToWaterLinks)
     error('The number of links from Power system to Water system is required.');
 end
@@ -120,12 +107,12 @@ end
 candidateGasNodes = (1:length(GasSystem.Node))';
 numP2G = params.numPowerToGasLinks;
 selectedGasNodes = randsample(candidateGasNodes, min(numP2G, length(candidateGasNodes)));
-PowerToGas = zeros(length(selectedGasNodes), 3);  % [PowerNodeID, GasNodeID, Required_Power_Demand]
+PowerToGas = zeros(length(selectedGasNodes), 3);  % [PowerNodeID, GasNodeID, Required_Power_Demand_MW]
 for i = 1:length(selectedGasNodes)
     gNode = selectedGasNodes(i);
     gLon = GasSystem.Node(gNode).Longitude;
     gLat = GasSystem.Node(gNode).Latitude;
-    % Find the nearest power node.
+    % Find the nearest power node with positive target demand.
     powerCoords = [[PowerSystem.Node.Longitude]' [PowerSystem.Node.Latitude]'];
     dists = zeros(size(powerCoords,1),1)+Inf;
     for j = 1:size(powerCoords,1)
@@ -138,16 +125,16 @@ for i = 1:length(selectedGasNodes)
 end
 
 % Establish Gas-to-Power Links (Gas-fired generators)
-% Select a subset of power nodes with nonzero generation.
+% Select power nodes with positive generation capacity.
 powerSourceNodes = find([PowerSystem.Node.MaxGeneration]' > 0);
 numG2P = params.numGasToPowerLinks;
 selectedPowerNodes = randsample(powerSourceNodes, min(numG2P, length(powerSourceNodes)));
-GasToPower = zeros(length(selectedPowerNodes), 5); % [GasNodeID, PowerNodeID, Conversion_Ratio, Required_Gas_Flow, Required_Max_Gas_Flow]
+GasToPower = zeros(length(selectedPowerNodes), 5); % [GasNodeID, PowerNodeID, Conversion_Ratio_MW_per_m3_per_h, Required_Gas_Flow_m3_per_h, Required_Max_Gas_Flow_m3_per_h]
 for i = 1:length(selectedPowerNodes)
     pNode = selectedPowerNodes(i);
     pLon = PowerSystem.Node(pNode).Longitude;
     pLat = PowerSystem.Node(pNode).Latitude;
-    % Find the nearest gas node.
+    % Find the nearest gas node with positive target demand.
     gasCoords = [[GasSystem.Node.Longitude]' [GasSystem.Node.Latitude]'];
     dists = zeros(size(gasCoords,1),1)+Inf;
     for j = 1:size(gasCoords,1)
@@ -163,18 +150,18 @@ for i = 1:length(selectedPowerNodes)
 end
 
 %% Step 2: Set Power-Water Interdependency Links
-%Set WaterToPower Interdependency (Power node needs water for cooling)
+% Set WaterToPower interdependency (power nodes need cooling water).
 % For each selected power node (from powerSourceNodes), find the nearest water node.
 numW2P = params.numWaterToPowerLinks;
 selectedPowerNodes = randsample(powerSourceNodes, min(numW2P, length(powerSourceNodes)));
-WaterToPower = zeros(length(selectedPowerNodes), 3);  % [WaterNodeID, PowerNodeID, Required_Water_Demand]
+WaterToPower = zeros(length(selectedPowerNodes), 3);  % [WaterNodeID, PowerNodeID, Required_Water_Demand_m3_per_h]
 
 for i = 1:length(selectedPowerNodes)
     pNode = selectedPowerNodes(i);
     pLon = PowerSystem.Node(pNode).Longitude;
     pLat = PowerSystem.Node(pNode).Latitude;
     
-    % For all water nodes, compute geographic distance.
+    % Compute distances to water nodes with positive target demand.
     waterCoords = [[WaterSystem.Node.Longitude]' [WaterSystem.Node.Latitude]'];
     dists = zeros(size(waterCoords,1),1)+Inf;
     for j = 1:size(waterCoords,1)
@@ -187,19 +174,19 @@ for i = 1:length(selectedPowerNodes)
 end
 
 % Set PowerToWater Interdependency (Water node needs power to operate)
-% For each selected water node (with RealDemand > 0, if available; otherwise select randomly),
-% find the nearest power node.
+% Select water nodes uniformly without replacement and find the nearest
+% power node with positive target demand.
 candidateWaterNodes = (1:length(WaterSystem.Node))';
 numP2W = params.numPowerToWaterLinks;
 selectedWaterNodes = randsample(candidateWaterNodes, min(numP2W, length(candidateWaterNodes)));
-PowerToWater = zeros(length(selectedWaterNodes), 3);  % [PowerNodeID, WaterNodeID, Required_Power_Demand]
+PowerToWater = zeros(length(selectedWaterNodes), 3);  % [PowerNodeID, WaterNodeID, Required_Power_Demand_MW]
 
 for i = 1:length(selectedWaterNodes)
     wNode = selectedWaterNodes(i);
     wLon = WaterSystem.Node(wNode).Longitude;
     wLat = WaterSystem.Node(wNode).Latitude;
     
-    % For all power nodes, compute geographic distance.
+    % Compute distances to power nodes with positive target demand.
     powerCoords = [[PowerSystem.Node.Longitude]' [PowerSystem.Node.Latitude]'];
     dists = zeros(size(powerCoords,1),1)+Inf;
     for j = 1:size(powerCoords,1)
@@ -216,17 +203,20 @@ NewPowerSystem = PowerSystem;
 % Add extra power demand from PowerToGas and PowerToWater links.
 for i = 1:size(PowerToGas,1)
     pNode = PowerToGas(i,1);
+    NewPowerSystem.Node(pNode).RealDemand = NewPowerSystem.Node(pNode).RealDemand + PowerToGas(i,3);
     NewPowerSystem.Node(pNode).TargetDemand = NewPowerSystem.Node(pNode).TargetDemand + PowerToGas(i,3);
 end
 for i = 1:size(PowerToWater,1)
     pNode = PowerToWater(i,1);
+    NewPowerSystem.Node(pNode).RealDemand = NewPowerSystem.Node(pNode).RealDemand + PowerToWater(i,3);
     NewPowerSystem.Node(pNode).TargetDemand = NewPowerSystem.Node(pNode).TargetDemand + PowerToWater(i,3);
 end
 % Run DC power flow to update power flows.
 sp = [];
+% dc_pf uses negative load injections and positive generation.
 sp.bus = [[NewPowerSystem.Node.ID]', ...
-       [NewPowerSystem.Node.RealDemand]' , ...
-       [NewPowerSystem.Node.TargetDemand]', ...
+       -[NewPowerSystem.Node.RealDemand]' , ...
+       -[NewPowerSystem.Node.TargetDemand]', ...
        [NewPowerSystem.Node.RealGeneration]', ...
        [NewPowerSystem.Node.MaxGeneration]'];
    
@@ -242,7 +232,7 @@ sp_new = dc_pf(sp); % assume dc_pf returns updated bus and branch data
 
 % Update nodes:
 for n = 1:length(NewPowerSystem.Node)
-    NewPowerSystem.Node(n).RealDemand = sp_new.bus(n,2);
+    NewPowerSystem.Node(n).RealDemand = -sp_new.bus(n,2);
     NewPowerSystem.Node(n).RealGeneration = sp_new.bus(n,4);
 end
 
@@ -252,7 +242,11 @@ for e = 1:length(NewPowerSystem.Edge)
     % Adjust capacity: if the absolute flow exceeds the current capacity,
     % scale capacity up to the next multiple.
     currentCap = sp_new.branch(e,6);
-    NewPowerSystem.Edge(e).Capacity = ceil(abs(sp_new.branch(e,5)) / currentCap) * currentCap;
+    if abs(sp_new.branch(e,5)) > currentCap
+        NewPowerSystem.Edge(e).Capacity = ceil(abs(sp_new.branch(e,5)) / currentCap) * currentCap;
+    else
+        NewPowerSystem.Edge(e).Capacity = currentCap;
+    end
 end
 
 %% Step 4: Update Gas System (NewGasSystem)
@@ -267,11 +261,11 @@ if ~isempty(GasToPower)
     end
 
     % Update gas system using a max-flow based procedure.
-    sourceNodes = nodeData(nodeData(:,4) > 0, 1);  % nodes with generation
-    demandNodes = nodeData(nodeData(:,2) > 0, 1);    % nodes with demand
+    sourceNodes = nodeData(nodeData(:,5) > 0, 1);  % nodes with generation capacity
+    demandNodes = nodeData(nodeData(:,3) > 0, 1);  % nodes with target demand
     fromNodes = [NewGasSystem.Edge.FromNodeID]';
     toNodes   = [NewGasSystem.Edge.ToNodeID]';
-    capacities = [NewGasSystem.Edge.Capacity]';  % Use MaxFlow as capacity.
+    capacities = [NewGasSystem.Edge.Capacity]';  % Pipe capacities (m^3/h).
     G_gas = digraph([fromNodes; toNodes], [toNodes; fromNodes], [capacities; capacities]);
     N = numnodes(G_gas);
     G_aug = addnode(G_gas,2); % Add super source (N+1) and super sink (N+2)
@@ -312,8 +306,8 @@ if ~isempty(GasToPower)
     end
 
     for n=1:length(NewGasSystem.Node)
-        NewGasSystem.Node(n).RealDemand=flowNet(N+1,n);
-        NewGasSystem.Node(n).RealGeneration=flowNet(n,N+2);
+        NewGasSystem.Node(n).RealDemand=flowNet(n,N+2);
+        NewGasSystem.Node(n).RealGeneration=flowNet(N+1,n);
         NewGasSystem.Node(n).TargetDemand=nodeData(n,3);
         NewGasSystem.Node(n).MaxGeneration=nodeData(n,5);
     end
@@ -324,16 +318,16 @@ NewWaterSystem = WaterSystem;
 if ~isempty(WaterToPower)
     nodeData = [[NewWaterSystem.Node.ID]' [NewWaterSystem.Node.RealDemand]' [NewWaterSystem.Node.TargetDemand]' [NewWaterSystem.Node.RealGeneration]' [NewWaterSystem.Node.MaxGeneration]'];
     for i = 1:size(WaterToPower,1)
-        % For each GasToPower link, add required gas flow to the gas node's target demand.
+        % Add the required cooling-water flow to the water node's target demand.
         nodeData(WaterToPower(i,1),3) = nodeData(WaterToPower(i,1),3) + WaterToPower(i,3);
     end
 
-    % Update gas system using a max-flow based procedure.
-    sourceNodes = nodeData(nodeData(:,4) > 0, 1);  % nodes with generation
-    demandNodes = nodeData(nodeData(:,2) > 0, 1);    % nodes with demand
+    % Update the water system using a max-flow based procedure.
+    sourceNodes = nodeData(nodeData(:,5) > 0, 1);  % nodes with generation capacity
+    demandNodes = nodeData(nodeData(:,3) > 0, 1);  % nodes with target demand
     fromNodes = [NewWaterSystem.Edge.FromNodeID]';
     toNodes   = [NewWaterSystem.Edge.ToNodeID]';
-    capacities = [NewWaterSystem.Edge.Capacity]';  % Use MaxFlow as capacity.
+    capacities = [NewWaterSystem.Edge.Capacity]';  % Pipe capacities (m^3/h).
     G_gas = digraph([fromNodes; toNodes], [toNodes; fromNodes], [capacities; capacities]);
     N = numnodes(G_gas);
     G_aug = addnode(G_gas,2); % Add super source (N+1) and super sink (N+2)
@@ -374,8 +368,8 @@ if ~isempty(WaterToPower)
     end
 
     for n=1:length(NewWaterSystem.Node)
-        NewWaterSystem.Node(n).RealDemand=flowNet(N+1,n);
-        NewWaterSystem.Node(n).RealGeneration=flowNet(n,N+2);
+        NewWaterSystem.Node(n).RealDemand=flowNet(n,N+2);
+        NewWaterSystem.Node(n).RealGeneration=flowNet(N+1,n);
         NewWaterSystem.Node(n).TargetDemand=nodeData(n,3);
         NewWaterSystem.Node(n).MaxGeneration=nodeData(n,5);
     end

@@ -8,7 +8,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = TimeIndexOptSingleDCPF
 %
 %
 % INPUTS:
-%   CIS                 : struct with two arrays, CIS.Node (1¡ÁN) and CIS.Edge (1¡ÁE). If params.SystemType=='power':
+%   CIS                 : struct with two arrays, CIS.Node (1 x N) and CIS.Edge (1 x E). If params.SystemType=='power':
 %                         CIS.Node fields include:
 %                           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %                           Longitude, Latitude, ServedPopulation, Voltage,
@@ -17,7 +17,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = TimeIndexOptSingleDCPF
 %                           ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity,
 %                           Susceptance, Voltage, X, Y, ClassName, SeismicFragilityType
 %
-%   CISComDamgScenario  : [Ndm¡Á4] each row = [DamageType, ComponentID, RepairTime, SysType]
+%   CISComDamgScenario  : [Ndm x 4] each row = [DamageType, ComponentID, RepairTime, SysType]
 %                         DamageType: 1=node, 2=edge
 %                         ComponentID: node index (if 1) or edge index (if 2)
 %                         RepairTime: duration to repair this component
@@ -36,7 +36,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = TimeIndexOptSingleDCPF
 %                 (row 1 is the pre-repair state at time=0)
 %   RepairSeq   : [Ndm x 5] matrix:
 %                 [DamageType, ComponentID, SysType, Time Point, TeamID]
-%   ZoneStateEvo   : Z¡ÁK numeric matrix of zone states at critical time points
+%   ZoneStateEvo   : Z x K numeric matrix of zone states at critical time points
 %                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
 %% Step 1: Input validation
 validSystems = {'power'};
@@ -63,7 +63,7 @@ Ndm = size(CISComDamgScenario,1);
 
 % Early return for empty damage scenario
 if Ndm == 0
-    [baseSysFunLoss, ~, baseZoneState] = SingleMF(CIS, CISComDamgScenario, params, TerminalZone);
+    [baseSysFunLoss, ~, baseZoneState] = SingleDCPF(CIS, CISComDamgScenario, params, TerminalZone);
     SysFunsEvo = [0, baseSysFunLoss];
     RepairSeq = [];
     ResLoss = [0, 0, 0];
@@ -306,8 +306,9 @@ for tp = 1:Tp-1
     SysFunsEvo(tp,3) = sum(Demnode);
     ZoneStateEvo(:,tp+1)= mapNodeStatesToZones(CIS, Demnode, TerminalZone,'Flow');
 end
-SysFunsEvo(end,3) = TPD;
-ZoneStateEvo(:,end) = 1;
+[finalSysFunLoss, ~, finalZoneState] = SingleDCPF(CIS, [], params, TerminalZone);
+SysFunsEvo(end,3) = finalSysFunLoss(2);
+ZoneStateEvo(:,end) = finalZoneState(:,2);
 
 % Normalized drop
 PostNorm = SysFunsEvo(:,3) ./ max(SysFunsEvo(:,4), eps);
@@ -351,7 +352,7 @@ function [Max_span, assign, loads] = makespan_lpt(task_duration, RR)
 % using the Longest Processing Time first (LPT) rule.
 %
 % INPUTS:
-%   task_duration : Vector of task durations (1Ã—N or NÃ—1)
+%   task_duration : Vector of task durations (1 x N or N x 1)
 %   RR : Number of workers (parallel identical machines)
 %
 % OUTPUTS:
@@ -363,7 +364,7 @@ function [Max_span, assign, loads] = makespan_lpt(task_duration, RR)
 %   The LPT heuristic sorts tasks by descending duration, then assigns each
 %   task to the worker with the current smallest load. This strategy achieves
 %   a good balance of loads across workers and guarantees a worst-case
-%   performance ratio â‰? (4/3 - 1/(3R)) of the optimal.
+%   performance ratio <= (4/3 - 1/(3R)) of the optimal.
 %
 % NOTE:
 %   - This function solves the *non-preemptive* scheduling case

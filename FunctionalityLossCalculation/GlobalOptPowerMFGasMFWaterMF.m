@@ -5,24 +5,24 @@ function [PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, PowerComState, GasCom
 %   This function assesses the functionality of interdependent power, gas
 %   and water systems under component damage scenarios using a global
 %   optimization-based mixed-integer linear programming (MILP) formulation.
-%   Max flow model is used to model both power, gas and water systems. 
+%   A max flow model is used for the power, gas, and water systems.
 %
 % INPUTS:
 %   PowerSystem, GasSystem, WaterSystem
-%       struct with two fields, CIS.Node (1℅N) and CIS.Edge (1℅E).
+%       struct with two fields, CIS.Node (1-by-N) and CIS.Edge (1-by-E).
 %       PowerSystem
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Voltage, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage, 
-%             每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType  
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%             - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
 %       GasSystem, WaterSystem:
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Pressure, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Pressure, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType  
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
 %
 %   PowerGasInterdependency:
 %       A structure with fields:
@@ -32,10 +32,10 @@ function [PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, PowerComState, GasCom
 %   PowerWaterInterdependency:
 %       A structure with fields:
 %           .PowerToWater: [PowerNodeID, WaterNodeID, TargetPowerFlow]
-%           .WaterToPower: [WaterNodeID, PowerNodeID, TargetPowerFlow]
+%           .WaterToPower: [WaterNodeID, PowerNodeID, TargetWaterFlow]
 %
 %   PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario:
-%        K℅2 matrix of damaged components:
+%        K-by-2 matrix of damaged components:
 %        [DamageType (1=node, 2=edge), DamageComponentID]
 %
 %   TerminalZone : structure array defining spatial zone divisions.
@@ -53,7 +53,7 @@ function [PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, PowerComState, GasCom
 %   PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss:
 %       1x3 vectors containing [Normalized Functionality Drop, Post-disaster Functionality, Pre-disaster Functionality]
 %
-%   PowerComState, GasComState: Structures with the post-disaster state:
+%   PowerComState, GasComState, WaterComState: Structures with the post-disaster state:
 %   - PowerComState.Node: An Nx3 matrix, where N is the number of nodes in the system:
 %     - PowerComState.Node(:,1): The ID of the node.
 %     - PowerComState.Node(:,2): The real demand of the node after the disaster.
@@ -63,7 +63,7 @@ function [PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, PowerComState, GasCom
 %     - PowerComState.Edge(:,2): The real flow of the edge after the disaster.
 % 
 %   PowerZoneState, GasZoneState, WaterZoneState:
-%       G℅2 matrix of zone-level functionality states, where G is the maximum zone ID:
+%       G-by-2 matrix of zone-level functionality states, where G is the number of zones:
 
 %% 1.Indexing & set parameters
 N_p = numel(PowerSystem.Node); N_g = numel(GasSystem.Node); N_w = numel(WaterSystem.Node);
@@ -119,6 +119,9 @@ isDamgGasNode   = ismember(GasNodeID,  GasComDamgScenario(GasComDamgScenario(:,1
 isDamgGasEdge   = ismember(GasEdgeID,   GasComDamgScenario(GasComDamgScenario(:,1)==2,2));
 isDamgWaterNode   = ismember(WaterNodeID,  WaterComDamgScenario(WaterComDamgScenario(:,1)==1,2));
 isDamgWaterEdge   = ismember(WaterEdgeID,  WaterComDamgScenario(WaterComDamgScenario(:,1)==2,2));
+isDamgPowerEdge = isDamgPowerEdge | ismember(EdgePowerFrom, PowerNodeID(isDamgPowerNode)) | ismember(EdgePowerTo, PowerNodeID(isDamgPowerNode));
+isDamgGasEdge = isDamgGasEdge | ismember(EdgeGasFrom, GasNodeID(isDamgGasNode)) | ismember(EdgeGasTo, GasNodeID(isDamgGasNode));
+isDamgWaterEdge = isDamgWaterEdge | ismember(EdgeWaterFrom, WaterNodeID(isDamgWaterNode)) | ismember(EdgeWaterTo, WaterNodeID(isDamgWaterNode));
 
 % Interdependency relations
 Dpg = PowerGasInterdependency.PowerToGas;
@@ -129,11 +132,15 @@ if ~isempty(Dpg)
     for i=1:size(temp,1)
         PG_Index(Dpg(:,2)==temp(i),2)=i;
     end
+else
+    Dpg=zeros(0,3);NPdg=0;NpdG=0;PG_Index=zeros(0,2);
 end
 
 Cgp = PowerGasInterdependency.GasToPower;
 if ~isempty(Cgp)
     NGcp = size(Cgp,1);
+else
+    Cgp=zeros(0,5);NGcp=0;
 end
 
 Dpw = PowerWaterInterdependency.PowerToWater;
@@ -169,7 +176,7 @@ WaterGenIdx = find(MaxWaterGen~=0);   Nsw = numel(WaterGenIdx);
 WaterDemIdx = find(TargetWaterDemand~=0); Ndw = numel(WaterDemIdx);
 Npv = E_p+Nsp+Ndp+NPdg+NPdw; Nps = NPdg+NPdw+NwdP; Npt_t = Npv+Nps;
 Ngv = E_g+Nsg+Ndg+NGcp; Ngs = NpdG; Ngt_t = Ngv+Ngs; 
-Nwv = E_w+Nsw+Ndw+NWdp; Ngs = NWdp+NpdW; Nwt_t = Nwv+Ngs; 
+Nwv = E_w+Nsw+Ndw+NWdp; Nws = NWdp+NpdW; Nwt_t = Nwv+Nws; 
 Nv = Npt_t+Ngt_t+Nwt_t;
 idx_power_flow = 1:E_p;
 idx_power_gen = E_p + (1:Nsp);
@@ -284,12 +291,24 @@ for i=1:NPdg
     Aeq5(i,idx_power2gas_state(i))=1; Aeq5(i,idx_gasInt_bin(PG_Index(i,2)))=-1;
 end
 for i=1:NPdw
-    Aeq4(i,idx_power2water_dem(i))=1; Aeq4(i,idx_power2water_state(i))=-Dpw(i,3);
-    Aeq5(i,idx_power2water_state(i))=1; Aeq5(i,idx_waterInt_bin(PW_Index(i,2)))=-1;
+    row=NPdg+i;
+    Aeq4(row,idx_power2water_dem(i))=1; Aeq4(row,idx_power2water_state(i))=-Dpw(i,3);
+    Aeq5(row,idx_power2water_state(i))=1; Aeq5(row,idx_waterInt_bin(PW_Index(i,2)))=-1;
 end
 for i=1:NWdp
-    Aeq4(i,idx_water2power_dem(i))=1; Aeq4(i,idx_water2power_state(i))=-Dwp(i,3);
-    Aeq5(i,idx_water2power_state(i))=1; Aeq5(i,idx_powerInt_bin(WP_Index(i,2)))=-1;
+    row=NPdg+NPdw+i;
+    Aeq4(row,idx_water2power_dem(i))=1; Aeq4(row,idx_water2power_state(i))=-Dwp(i,3);
+    Aeq5(row,idx_water2power_state(i))=1; Aeq5(row,idx_powerInt_bin(WP_Index(i,2)))=-1;
+end
+% (8) Gas-to-power conversion constraints
+p_nid=unique(Cgp(:,2));
+Aeq6=zeros(numel(p_nid),Nv);
+for i=1:size(Aeq6,1)
+    Aeq6(i,idx_power_gen(PowerGenIdx==p_nid(i)))=1;
+    gidxs=find(Cgp(:,2)==p_nid(i));
+    for j=1:length(gidxs)
+        Aeq6(i,idx_gas2power_dem(gidxs(j)))=-Cgp(gidxs(j),3);
+    end
 end
 %% 5. Inequality  constraints
 % (1) Flow constraints for driven edges
@@ -308,9 +327,11 @@ for i = 1:NpdG
     gcidx = gas_id(i);
     if gcidx > N_g 
         eidx = gcidx - N_g;
+        targetGasDamaged = isDamgGasEdge(eidx);
         tag1=tag1+1; Aineq1(tag1,idx_gasInt_bin(i)) = -EdgeGasCapacity(eidx); Aineq1(tag1,idx_gas_flow(eidx)) = -1; bineq1(tag1)=0;
         tag1=tag1+1; Aineq1(tag1,idx_gasInt_bin(i)) = -EdgeGasCapacity(eidx); Aineq1(tag1,idx_gas_flow(eidx)) = 1; bineq1(tag1)=0;
     else
+        targetGasDamaged = isDamgGasNode(gcidx);
         cedges = find(EdgeGasFrom==gcidx | EdgeGasTo==gcidx);
         for c=1:length(cedges)
             tag1=tag1+1; Aineq1(tag1,idx_gasInt_bin(i))=-EdgeGasCapacity(cedges(c)); Aineq1(tag1,idx_gas_flow(cedges(c)))=-1; bineq1(tag1)=0;
@@ -329,7 +350,7 @@ for i = 1:NpdG
     tag5=tag5+1; Aineq5(tag5,idx_gasInt_bin(i))=-1;
     for s=1:length(temp)
         tag2=tag2+1; Aineq2(tag2,idx_gasInt_bin(i))=1; Aineq2(tag2,idx_power2gas_state(temp(s)))=-1; bineq2(tag2)=0;
-        tag4=tag4+1; Aineq4(tag4,idx_power2gas_state(temp(s)))=1; bineq4(tag4)=1-isDamgGasNode(gcidx);
+        tag4=tag4+1; Aineq4(tag4,idx_power2gas_state(temp(s)))=1; bineq4(tag4)=1-targetGasDamaged;
         Aineq5(tag5,idx_power2gas_state(temp(s)))=1;
     end
     bineq5(tag5)=length(temp)-1;
@@ -340,9 +361,11 @@ for i = 1:NpdW
     wcidx = water_id(i);
     if wcidx > N_w 
         eidx = wcidx - N_w;
+        targetWaterDamaged = isDamgWaterEdge(eidx);
         tag1=tag1+1; Aineq1(tag1,idx_waterInt_bin(i)) = -EdgeWaterCapacity(eidx); Aineq1(tag1,idx_water_flow(eidx)) = -1; bineq1(tag1)=0;
         tag1=tag1+1; Aineq1(tag1,idx_waterInt_bin(i)) = -EdgeWaterCapacity(eidx); Aineq1(tag1,idx_water_flow(eidx)) = 1; bineq1(tag1)=0;
     else
+        targetWaterDamaged = isDamgWaterNode(wcidx);
         cedges = find(EdgeWaterFrom==wcidx | EdgeWaterTo==wcidx);
         for c=1:length(cedges)
             tag1=tag1+1; Aineq1(tag1,idx_waterInt_bin(i))=-EdgeWaterCapacity(cedges(c)); Aineq1(tag1,idx_water_flow(cedges(c)))=-1; bineq1(tag1)=0;
@@ -361,7 +384,7 @@ for i = 1:NpdW
     tag5=tag5+1; Aineq5(tag5,idx_waterInt_bin(i))=-1;
     for s=1:length(temp)
         tag2=tag2+1; Aineq2(tag2,idx_waterInt_bin(i))=1; Aineq2(tag2,idx_power2water_state(temp(s)))=-1; bineq2(tag2)=0;
-        tag4=tag4+1; Aineq4(tag4,idx_power2water_state(temp(s)))=1; bineq4(tag4)=1-isDamgWaterNode(wcidx);
+        tag4=tag4+1; Aineq4(tag4,idx_power2water_state(temp(s)))=1; bineq4(tag4)=1-targetWaterDamaged;
         Aineq5(tag5,idx_power2water_state(temp(s)))=1;
     end
     bineq5(tag5)=length(temp)-1;
@@ -372,9 +395,11 @@ for i = 1:NwdP
     pcidx = power_id(i);
     if pcidx > N_p 
         eidx = pcidx - N_p;
+        targetPowerDamaged = isDamgPowerEdge(eidx);
         tag1=tag1+1; Aineq1(tag1,idx_powerInt_bin(i)) = -EdgePowerCapacity(eidx); Aineq1(tag1,idx_power_flow(eidx)) = -1; bineq1(tag1)=0;
         tag1=tag1+1; Aineq1(tag1,idx_powerInt_bin(i)) = -EdgePowerCapacity(eidx); Aineq1(tag1,idx_power_flow(eidx)) = 1; bineq1(tag1)=0;
     else
+        targetPowerDamaged = isDamgPowerNode(pcidx);
         cedges = find(EdgePowerFrom==pcidx | EdgePowerTo==pcidx);
         for c=1:length(cedges)
             tag1=tag1+1; Aineq1(tag1,idx_powerInt_bin(i))=-EdgePowerCapacity(cedges(c)); Aineq1(tag1,idx_power_flow(cedges(c)))=-1; bineq1(tag1)=0;
@@ -393,7 +418,7 @@ for i = 1:NwdP
     tag5=tag5+1; Aineq5(tag5,idx_powerInt_bin(i))=-1;
     for s=1:length(temp)
         tag2=tag2+1; Aineq2(tag2,idx_powerInt_bin(i))=1; Aineq2(tag2,idx_water2power_state(temp(s)))=-1; bineq2(tag2)=0;
-        tag4=tag4+1; Aineq4(tag4,idx_water2power_state(temp(s)))=1; bineq4(tag4)=1-isDamgPowerNode(pcidx);
+        tag4=tag4+1; Aineq4(tag4,idx_water2power_state(temp(s)))=1; bineq4(tag4)=1-targetPowerDamaged;
         Aineq5(tag5,idx_water2power_state(temp(s)))=1;
     end
     bineq5(tag5)=length(temp)-1;
@@ -434,7 +459,7 @@ if ~isempty(Dwp)
     end
 end
 %% 6.Solve MILP
-Aeq = [Aeq1; Aeq2; Aeq3; Aeq4; Aeq5];
+Aeq = [Aeq1; Aeq2; Aeq3; Aeq4; Aeq5; Aeq6];
 beq = zeros(size(Aeq,1),1);
 Aineq = [Aineq1; Aineq2; Aineq3; Aineq4; Aineq5; Aineq6];
 bineq = [bineq1; bineq2; bineq3; bineq4; bineq5; bineq6];
@@ -475,10 +500,10 @@ Interdependency.Cgp=[x(idx_gas2power_dem)];
 Interdependency.Dpw=[x(idx_power2water_state), x(idx_power2water_dem)];
 Interdependency.Dwp=[x(idx_water2power_state), x(idx_water2power_dem)];
 
-PowerZoneState(:,1) = [(1:size(TerminalZone,2))'];
+PowerZoneState(:,1) = (1:numel(TerminalZone))';
 PowerZoneState(:,2) = mapNodeStatesToZones(PowerSystem, PostDisasterPowerDemand, TerminalZone,'Flow');
-GasZoneState(:,1) = [(1:size(TerminalZone,2))'];
+GasZoneState(:,1) = (1:numel(TerminalZone))';
 GasZoneState(:,2) = mapNodeStatesToZones(GasSystem, PostDisasterGasDemand, TerminalZone,'Flow');
-WaterZoneState(:,1) = [(1:size(TerminalZone,2))'];
+WaterZoneState(:,1) = (1:numel(TerminalZone))';
 WaterZoneState(:,2) = mapNodeStatesToZones(WaterSystem, PostDisasterWaterDemand, TerminalZone,'Flow');
 end

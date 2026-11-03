@@ -2,7 +2,7 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
     PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo] = HeuristicPowerDCPFGasMFWaterMF(PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, ...
     PowerWaterInterdependency, PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params)
 % INTRODUCTION:
-%   Interdependent repair scheduling for power¨Cgas¨Cwater via GA/SA. Builds
+%   Interdependent repair scheduling for power-gas-water via GA/SA. Builds
 %   one integrated priority across all damaged components, maps it
 %   to per-system parallel schedules under crew limits. and System
 %   functionality is evaluated after each repair stage using DC power flow
@@ -10,7 +10,7 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 %
 % INPUT:
 %   PowerSystem, GasSystem, WaterSystem:
-%       Each is a struct with fields .Node (1¡ÁN) and .Edge (1¡ÁE).
+%       Each is a struct with fields .Node (1 x N) and .Edge (1 x E).
 %       - PowerSystem.Node fields include:
 %           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %           Longitude, Latitude, ServedPopulation, Voltage, ServiceZone,
@@ -37,7 +37,7 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 %           .WaterToPower: [WaterNodeID, PowerNodeID, TargetPowerFlow]
 
 %   PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario:
-%       Each is an Ndm¡Á4 matrix with rows:
+%       Each is an Ndm x 4 matrix with rows:
 %           [DamageType, ComponentID, RepairTime, SysType]
 %         where DamageType = 1 (node) or 2 (edge),
 %               ComponentID = index of node/edge in its system,
@@ -45,7 +45,7 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 %               SysType = 1 (power), 2 (gas), or 3 (water).
 %   TerminalZone : structure array defining spatial zone divisions.
 %   params (struct), required fields:
-%       .RepairCrew     : [1¡Á3] array specifying the number of repair teams
+%       .RepairCrew     : [1 x 3] array specifying the number of repair teams
 %                         for power, gas, and water respectively.
 %       .ScheMethod   'GA' or 'SA'
 %       GA options: .GANumInd .GAMaxgen .GASelectionRate .GACrossoverProb .GAMutationProb
@@ -54,10 +54,10 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 %
 % OUTPUT:
 %   PowerResLoss, GasResLoss, WaterResLoss:
-%       Each is a 1¡Á3 vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
+%       Each is a 1 x 3 vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
 
 %   PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo:
-%       Each is a (K+1)¡Á4 matrix, where K is total completed repairs (all systems combined):
+%       Each is a (K+1) x 4 matrix, where K is total completed repairs (all systems combined):
 %           [ time, normalized functionality drop, post-disaster functionality, pre-disaster functionality ]
 
 %   PowerRepairSeq, GasRepairSeq, WaterRepairSeq:
@@ -65,8 +65,8 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 %           [DamageType, ComponentID, SysType, FinishTime, TeamID]
 %       filtered by SysType = 1 (power), 2 (gas), or 3 (water) respectively.
 %   PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo:
-%       : Z¡ÁK numeric matrix of zone states at critical time points
-%                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%       Each is a Z x (K+2) matrix:
+%           [ZoneID, initial service level, service levels after each repair]
 %%  Step 1: Validate inputs
 % Repair crews for 3 systems: [power, gas, water]
 if ~isfield(params,'RepairCrew')
@@ -145,7 +145,7 @@ end
 %%  Step 2: Choose method
 switch params.ScheMethod
     case 'GA'
-        [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerRepairSeq, GasRepairSeq, WaterRepairSeq...
+        [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerRepairSeq, GasRepairSeq, WaterRepairSeq,...
             PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo] = GABasedRepairSchedulingPowerDCPFGasMFWaterMF(PowerSystem, GasSystem, WaterSystem,...
             PowerGasInterdependency, PowerWaterInterdependency,PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params);
     case 'SA'
@@ -156,7 +156,7 @@ end
 end
 
 
-function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerRepairSeq, GasRepairSeq, WaterRepairSeq...
+function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerRepairSeq, GasRepairSeq, WaterRepairSeq,...
     PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo] = GABasedRepairSchedulingPowerDCPFGasMFWaterMF(PowerSystem, GasSystem, WaterSystem,...
     PowerGasInterdependency, PowerWaterInterdependency,PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params)
 % INTRODUCTION:
@@ -166,7 +166,7 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 % INPUT:
 % PowerSystem, GasSystem, WaterSystem,PowerGasInterdependency,
 % PowerWaterInterdependency, PowerComDamgScenario, GasComDamgScenario,
-% WaterComDamgScenario, params : Same as main function. GA fields used¡£
+% WaterComDamgScenario, params : Same as main function. GA fields used.
 %
 % OUTPUT: PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo,
 % GasSysFunsEvo, WaterSysFunsEvo, PowerRepairSeq, GasRepairSeq,
@@ -196,7 +196,7 @@ else
         repairseq = makeIntegratedSchedule(res_seq, PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, RR_power, RR_gas, RR_water);
         [ ~,  ~, ~, pLoss, gLoss, wLoss] = computeRestorationCurvePowerDCPFGasMFWaterMF...
             (repairseq, PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
-            PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone);
+            PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params);
         ObjVC(i,1) = pLoss(1)+gLoss(1)+wLoss(1);
     end
     % record the min value
@@ -214,7 +214,7 @@ else
             repairseq = makeIntegratedSchedule(res_seq, PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, RR_power, RR_gas, RR_water);
             [ ~,  ~, ~, pLoss, gLoss, wLoss] = computeRestorationCurvePowerDCPFGasMFWaterMF...
                 (repairseq, PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
-                PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone);
+                PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params);
             ObjVC(i,1) = pLoss(1)+gLoss(1)+wLoss(1);
         end
         gen = gen+1;
@@ -234,7 +234,7 @@ GasRepairSeq   = repairseq(repairseq(:,3)==2,:);
 WaterRepairSeq = repairseq(repairseq(:,3)==3,:);
 [PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerResLoss, GasResLoss, WaterResLoss,PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo]...
     = computeRestorationCurvePowerDCPFGasMFWaterMF (repairseq, PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
-    PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone);
+    PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params);
 end
 
 
@@ -250,7 +250,7 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 % INPUT:
 % PowerSystem, GasSystem, WaterSystem,PowerGasInterdependency,
 % PowerWaterInterdependency, PowerComDamgScenario, GasComDamgScenario,
-% WaterComDamgScenario, params : Same as main function. GA fields used¡£
+% WaterComDamgScenario, params : Same as main function. SA fields used.
 %
 % OUTPUT:
 % PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo,
@@ -276,7 +276,7 @@ else
     repairseq = makeIntegratedSchedule(res_seq, PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, RR_power, RR_gas, RR_water);
     [ ~,  ~, ~, pLoss, gLoss, wLoss] = computeRestorationCurvePowerDCPFGasMFWaterMF...
         (repairseq, PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
-        PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone);
+        PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params);
     objv = pLoss(1)+gLoss(1)+wLoss(1);
     opt_res_seq = res_seq;
     best_objv = objv;
@@ -297,7 +297,7 @@ else
             repairseq = makeIntegratedSchedule(res_seq, PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, RR_power, RR_gas, RR_water);
             [ ~,  ~, ~, pLoss, gLoss, wLoss] = computeRestorationCurvePowerDCPFGasMFWaterMF...
                 (repairseq, PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
-                PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone);
+                PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params);
             cand_objv = pLoss(1)+gLoss(1)+wLoss(1);
             % metropolis criterion
             if cand_objv <= objv
@@ -325,7 +325,7 @@ GasRepairSeq   = repairseq(repairseq(:,3)==2,:);
 WaterRepairSeq = repairseq(repairseq(:,3)==3,:);
 [PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerResLoss, GasResLoss, WaterResLoss,PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo] ...
     = computeRestorationCurvePowerDCPFGasMFWaterMF (repairseq, PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
-    PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone);
+    PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params);
 end
 
 
@@ -366,7 +366,7 @@ end
 
 function [PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerResLoss, GasResLoss, WaterResLoss,PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo]...
     = computeRestorationCurvePowerDCPFGasMFWaterMF(Integrated_schedule, PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
-    PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone)
+    PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params)
 
 %   Track functionality over an integrated (merged) repair timeline and
 %   compute per-system resilience loss for power/gas/water.
@@ -384,13 +384,12 @@ tline = [0; Integrated_schedule(:,4)];
 PowerSysFunsEvo = zeros(K+1,4); PowerSysFunsEvo(:,1) = tline;
 GasSysFunsEvo   = zeros(K+1,4); GasSysFunsEvo(:,1)   = tline;
 WaterSysFunsEvo = zeros(K+1,4); WaterSysFunsEvo(:,1) = tline;
-PowerZoneStateEvo= nan(numel(TerminalZone), K+1);
-GasZoneStateEvo= nan(numel(TerminalZone), K+1);
-WaterZoneStateEvo= nan(numel(TerminalZone), K+1);
+PowerZoneStateEvo= nan(numel(TerminalZone), K+2);
+GasZoneStateEvo= nan(numel(TerminalZone), K+2);
+WaterZoneStateEvo= nan(numel(TerminalZone), K+2);
 
 % Damage sets
 Damg = {PowerComDamgScenario; GasComDamgScenario; WaterComDamgScenario};
-params=struct();
 [pLoss, gLoss, wLoss,~,~,~,zonePower,zoneGas,zoneWater] = GlobalOptPowerDCPFGasMFWaterMF( ...
     PowerSystem, GasSystem, WaterSystem, ...
     PowerGasInterdependency, PowerWaterInterdependency, ...

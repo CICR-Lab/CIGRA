@@ -1,37 +1,46 @@
 function [SysRes, ZoneRes] = EvaluateSingleCISSeismicRes(CIS,SeismicScenario,TerminalZone,params,ResilienceGoal)
 % INTRODUCTION
 %   This function quantifies the seismic resilience of a single critical infrastructure system (CIS)
-%   at both system and zone levels. Given seismic scenarios and damage realizations, it simulates
+%   at both system and zone levels. Given one seismic scenario and damage realizations, it simulates
 %   repair processes, reconstructs functionality trajectories, and evaluates resilience using
 %   one of three metrics:
-%        'ResLoss'   每 normalized area under (1 - F(t))
-%        'CritTime'  每 weighted functionality at specified time points
-%        'UserGoal'  每 population-weighted goal satisfaction rate
+%        'ResLoss'   - normalized area under (1 - F(t))
+%        'CritTime'  - weighted functionality at specified time points
+%        'UserGoal'  - population-weighted goal satisfaction rate
 %
 % INPUTS
-%   CIS                 : struct with two arrays, CIS.Node (1℅N) and CIS.Edge (1℅E).  Its contents depend on params.SystemType:
-%                        If ＆power＊:
+%   CIS                 : struct with two arrays, CIS.Node (1xN) and CIS.Edge (1xE). Its contents depend on params.SystemType:
+%                        If 'power':
 %                         CIS.Node fields:
-%                         每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%                         每 Voltage, ServiceZone, ClassName, SeismicFragilityType
+%                         - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%                         - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %                         CIS.Edge fields:
-%                        每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
-%                        每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
-%                        If ＆gas＊ or ＆water＊:
+%                         - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%                         - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
+%                        If 'gas' or 'water':
 %                         CIS.Node fields:
-%                        每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%                        每 Pressure, ServiceZone, ClassName, SeismicFragilityType
+%                         - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%                         - Pressure, ServiceZone, ClassName, SeismicFragilityType
 %                        CIS.Edge fields:
-%                        每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
+%                         - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
+%                        If 'road':
+%                         CIS.Node fields:
+%                         - ID, Longitude, Latitude, ServedPopulation, ServiceZone, ClassName, SeismicFragilityType
+%                         CIS.Edge fields:
+%                         - ID, FromNodeID, ToNodeID, Length, Highway, MaxSpeed, X, Y, ClassName, SeismicFragilityType
 %
-%  SeismicScenario: Structure array for zones with fields:
+%   SeismicScenario : 1-by-Z struct array describing one or more aligned seismic
+%                      hazard-field realizations across all zones. Only the first
+%                      realization is evaluated. Required fields:
 %                        .X, .Y                 - Boundary coordinates (NaN-terminated)
-%                        .PGA                   - [PGA1, PGA2, ＃, PGAm] (scalar or vector) for the zone
-%                        .LiquefactionProb      - [Prob1, Prob2, ＃, Probm] for the zone
-%                        .LandSlideProb         - [Prob1, Prob2, ＃, Probm] for the zone
-%                        .LateralSpreadingPGD   - [PGD1, ＃, PGDm] for the zone
-%                        .VerticalSettlementPGD - [PGD1, ＃, PGDm] for the zone
-%                        .LandSlidePGD          - [PGD1, ＃, PGDm] for the zone
+%                        .PGA                   - Peak ground acceleration, in g
+%                        .SA10                  - Spectral acceleration at 1.0 s, in g (road only)
+%                        .PGV                   - Peak ground velocity, in m/s (gas and water only)
+%                        .LiquefactionProb      - Liquefaction probability
+%                        .LandSlideProb         - Landslide probability
+%                        .LateralSpreadingPGD   - Lateral-spreading displacement, in inches
+%                        .VerticalSettlementPGD - Vertical-settlement displacement, in inches
+%                        .LandSlidePGD          - Landslide displacement, in inches
 %
 %   TerminalZone     : 1xZ struct array describing zones/grids.
 %                      Required fields:
@@ -41,19 +50,23 @@ function [SysRes, ZoneRes] = EvaluateSingleCISSeismicRes(CIS,SeismicScenario,Ter
 %                        .ResMetric      : 'ResLoss' | 'CritTime' | 'UserGoal'
 %                        .RepairStrategy : 'Rule' | 'Heuristic' | 'Enumeration' | 'TimeIndexed' | 'ComponentIndexed'
 %                        .SystemType     : 'power' | 'gas' | 'water' | 'road'
-%                        .FunMetric      : 'Pop' | 'SDC' | 'LCS' | 'NPC' | 'MF' | 'DCPF'
-%                        .numSim         : positive integer (Monte Carlo trials)
+%                        .FunMetric      : 'POP' | 'SDC' | 'LCS' | 'NPC' | 'MF' | 'DCPF'
+%                        .numSim         : positive integer; number of component-damage
+%                                          and repair-time Monte Carlo realizations
+%                                          under the first seismic hazard-field realization
+%                        .RepairCrew     : positive integer (number of repair crews)
 %                      For CritTime:
-%                        .CritTimes      : vector of checkpoints (default [0,3,7,30,90])
+%                        .CritTimes      : vector of checkpoints in days (default [0,3,7,30,90])
 %                        .CritWeights    : same length as CritTimes; will be normalized to sum=1
 %                      Strategy-specific:
-%                        .RuleType / .ScheMethod, etc., as required by your subroutines
+%                        .RuleType       : 'degree' | 'betweenness' | 'proximity' (required for RepairStrategy='Rule')
+%                        .ScheMethod     : 'SA' | 'GA' (required for RepairStrategy='Heuristic')
 %
 %   ResilienceGoal   : (Only when ResMetric = 'UserGoal') numeric vector of length Z (>=0),
-%                      where each entry is the maximum tolerable outage duration (same units as time axis).
+%                      where each entry is the maximum tolerable outage duration in days.
 %
 % OUTPUTS
-%   SysRes           : scalar for 'ResLoss', 'CritTime', and 'UserGoal' 〞 the mean across simulations.
+%   SysRes           : scalar for 'ResLoss', 'CritTime', and 'UserGoal' - the mean across simulations.
 %                      (For 'ResLoss': mean normalized loss; for 'CritTime': mean weighted functionality;
 %                       for 'UserGoal': mean population-weighted goal satisfaction.)
 %
@@ -100,21 +113,25 @@ switch params.ResMetric
         end
         
     case 'CritTime'
-        if ~isfield(params,'CritTimes') || isempty(params.CritTimes) || ~isnumeric(params.CritTimes)
+        if ~isfield(params,'CritTimes') || isempty(params.CritTimes)
             params.CritTimes = [0, 3, 7, 30, 90];
         end
+        validateattributes(params.CritTimes, {'numeric'}, ...
+            {'real','vector','finite','nonnegative'}, mfilename, 'params.CritTimes');
         if ~isfield(params,'CritWeights') || isempty(params.CritWeights)
             params.CritWeights = ones(size(params.CritTimes));
-        else
-            if ~(isnumeric(params.CritWeights) && numel(params.CritWeights) == numel(params.CritTimes))
-                error('params.CritWeights must be numeric with the same length as params.CritTimes.');
-            end
+        end
+        validateattributes(params.CritWeights, {'numeric'}, ...
+            {'real','vector','finite','nonnegative','numel',numel(params.CritTimes)}, ...
+            mfilename, 'params.CritWeights');
+        if ~any(params.CritWeights)
+            error('params.CritWeights must contain at least one positive value.');
         end
         % normalize weights to sum = 1
         params.CritWeights = params.CritWeights(:) / sum(params.CritWeights(:));
 end
 
-% RepairStrategy-specific requirements + SystemType每FunMetric compatibility
+% RepairStrategy-specific requirements + SystemType-FunMetric compatibility
 validStrategies = {'Rule','Heuristic','Enumeration','TimeIndexed','ComponentIndexed'};
 if ~ismember(params.RepairStrategy, validStrategies)
     error('Invalid params.RepairStrategy. Allowed: Rule | Heuristic | Enumeration | TimeIndexed | ComponentIndexed');
@@ -125,11 +142,11 @@ if ~ismember(params.SystemType, validSystemTypes)
 end
 switch params.SystemType
     case 'power'
-        allowedBase = {'DCPF','MF','Pop','SDC','LCS','NPC'};
+        allowedBase = {'DCPF','MF','POP','SDC','LCS','NPC'};
     case {'gas','water'}
-        allowedBase = {'MF','Pop','SDC','LCS','NPC'};
+        allowedBase = {'MF','POP','SDC','LCS','NPC'};
     case 'road'
-        allowedBase = {'Pop','LCS','NPC'};
+        allowedBase = {'POP','LCS','NPC'};
 end
 switch params.RepairStrategy
     case 'Rule'
@@ -170,19 +187,19 @@ switch params.SystemType
     case 'power'
         system_type =1;
         ComFPs = calculatePowerComSeismicFragility(CIS, SeismicScenario);
-        ComDamgScenario = generatePowerComSeismicDamgScenario(CIS, ComFPs, params.numSim);
+        ComDamgScenario = generatePowerComSeismicDamgScenario(CIS, ComFPs(1), params.numSim);
     case 'gas'
         system_type =2;
         ComFPs = calculateGasComSeismicFragility(CIS, SeismicScenario);
-        ComDamgScenario = generateGasComSeismicDamgScenario(CIS, ComFPs, params.numSim);
+        ComDamgScenario = generateGasComSeismicDamgScenario(CIS, ComFPs(1), params.numSim);
     case 'water'
         system_type =3;
         ComFPs = calculateWaterComSeismicFragility(CIS, SeismicScenario);
-        ComDamgScenario = generateWaterComSeismicDamgScenario(CIS, ComFPs, params.numSim);
+        ComDamgScenario = generateWaterComSeismicDamgScenario(CIS, ComFPs(1), params.numSim);
     case 'road'
         system_type =4;
         ComFPs = calculateRoadComSeismicFragility(CIS, SeismicScenario);
-        ComDamgScenario = generateRoadComSeismicDamgScenario(CIS, ComFPs, params.numSim);
+        ComDamgScenario = generateRoadComSeismicDamgScenario(CIS, ComFPs(1), params.numSim);
 end
 
 %% Step 3: get repair curve
@@ -190,7 +207,7 @@ SysFunsEvoAll      = cell(params.numSim,1);  % System functionality evolution
 SysResLossAll      = cell(params.numSim,1);  % System-level ResLoss
 RepairSeqAll       = cell(params.numSim,1);  % Repair sequences
 ZoneStateEvoAll    = cell(params.numSim,1);  % Zone-level functionality
-TimeAsxisAll        = cell(params.numSim,1);
+TimeAxisAll         = cell(params.numSim,1);
 Z=length(TerminalZone);
 
 for i=1:params.numSim
@@ -211,7 +228,6 @@ for i=1:params.numSim
         end
     end
     CISComDamgScenario = [NodeDamgScenario; EdgeDamgScenario];
-%     CISComDamgScenario=CISComDamgScenario)
     
     % get repair sequence
     switch params.RepairStrategy
@@ -234,7 +250,7 @@ for i=1:params.numSim
                     [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = HeuristicRepairSingleConnectivity(CIS, CISComDamgScenario, TerminalZone, params);
             end
         case 'Enumeration'
-            [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = EnumerationRepairSingleCIS(CIS, ComDamgScenario, TerminalZone, params);
+            [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = EnumerationRepairSingleCIS(CIS, CISComDamgScenario, TerminalZone, params);
         case 'TimeIndexed'
             switch params.FunMetric
                 case 'DCPF'
@@ -245,9 +261,9 @@ for i=1:params.numSim
         case 'ComponentIndexed'
             switch params.FunMetric
                 case 'DCPF'
-                    [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleDCPF(CIS, ComDamgScenario, TerminalZone, params);
+                    [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleDCPF(CIS, CISComDamgScenario, TerminalZone, params);
                 case 'MF'
-                    [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleMF(CIS, ComDamgScenario, TerminalZone, params);
+                    [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleMF(CIS, CISComDamgScenario, TerminalZone, params);
             end
     end
     
@@ -267,7 +283,8 @@ switch params.ResMetric
         for i = 1:params.numSim
             RL(i) = SysResLossAll{i}(1);
         end
-        SysRes = nanmean(RL);
+        SysRes.RL=RL;
+        SysRes.Average = nanmean(RL);
         
         % Zone scope: per-zone mean normalized loss from ZoneStateEvoAll/TimeAxisAll
         ZoneRes = nan(Z,2);
@@ -296,7 +313,8 @@ switch params.ResMetric
             Fk = L(k);
             RCT_sys(i) = sum(params.CritWeights(:) .* Fk);
         end
-        SysRes = nanmean(RCT_sys);
+        SysRes.RL=RCT_sys;
+        SysRes.Average = nanmean(RCT_sys);
         
         % Zone-level R_CT
         ZoneRes = nan(Z,2);
@@ -326,10 +344,8 @@ switch params.ResMetric
             
             for z = 1:Z
                 gz = ZM(z,2:end).';
-                if ~isempty(gz) && ~all(isnan(gz))
-                    idx = find(round(gz) >= 1, 1, 'first');
-                    sat_i(z) = double(t (idx) <= ResilienceGoal(z));
-                end
+                idx = find(gz >= 1 - 1e-9, 1, 'first');
+                sat_i(z) = ~isempty(idx) && t(idx) <= ResilienceGoal(z);
             end
             
             SatZone_all(i,:) = sat_i.';
@@ -337,7 +353,8 @@ switch params.ResMetric
             SatSys_all(i)    = sum(wZ .* sat_i);
         end
         
-        SysRes = nanmean(SatSys_all);
+        SysRes.RL=SatSys_all;
+        SysRes.Average = nanmean(SatSys_all);
         ZoneRes = [ZoneIDs, nanmean(SatZone_all,1).'];
 end
 end

@@ -33,6 +33,9 @@ function MergedCIS = Merge_CIS(systems)
         
         % Align and add nodes
         alignedNodes = arrayfun(@(k) alignStruct(currentSystem.Node(k), nodeTemplate), 1:numNodes);
+        for n = 1:numNodes
+            alignedNodes(n).ID = alignedNodes(n).ID + nodeOffset;
+        end
         MergedCIS.Node = [MergedCIS.Node, alignedNodes];
         
         % Align and add edges (with index shifting)

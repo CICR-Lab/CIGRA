@@ -1,10 +1,26 @@
 function BackboneRoadSystem = extractBackboneRoadNetwork(RoadSystem,TerminalZone,BackboneHighwayTypes)
+% extractBackboneRoadNetwork Extracts the largest connected backbone road network.
+%
+%   BackboneRoadSystem = extractBackboneRoadNetwork(RoadSystem, ...
+%       TerminalZone, BackboneHighwayTypes) retains edges whose Highway
+%   values are listed in BackboneHighwayTypes, keeps the connected component
+%   with the most edges, and renumbers the retained nodes and edges.
+%
+%   RoadSystem contains Node and Edge structure arrays. Node IDs must match
+%   their positions in RoadSystem.Node. TerminalZone contains zone boundary
+%   coordinates and Population. BackboneHighwayTypes is a vector of numeric
+%   Highway codes to retain.
+%
+%   The output preserves the retained road geometry and attributes and
+%   assigns every terminal zone and its population to retained road nodes.
 
-edgeData=[[RoadSystem.Edge.ID]' [RoadSystem.Edge.FromNodeID]' [RoadSystem.Edge.ToNodeID]' [RoadSystem.Edge.Length]' [RoadSystem.Edge.Highway]' [RoadSystem.Edge.MaxSpeed]'];
+edgeData=[[RoadSystem.Edge.ID]' [RoadSystem.Edge.FromNodeID]' [RoadSystem.Edge.ToNodeID]' [RoadSystem.Edge.Length]' [RoadSystem.Edge.Highway]' [RoadSystem.Edge.MaxSpeed]' (1:numel(RoadSystem.Edge))'];
 nodeData=[[RoadSystem.Node.ID]' [RoadSystem.Node.Longitude]' [RoadSystem.Node.Latitude]'];
-orgEdgeData=edgeData;
 
 edgeData(~ismember(edgeData(:,5),BackboneHighwayTypes), :) = [];
+if isempty(edgeData)
+    error('No road edges match BackboneHighwayTypes.');
+end
 
 % Remove nodes that are no longer connected.
 newNodeIDs = unique(edgeData(:,[2 3]));
@@ -57,8 +73,10 @@ end
 % For zones with no directly located node, assign the nearest node.
 zoneNode = [];
 for k = 1:numel(TerminalZone)
-    zoneCenterLon = mean(TerminalZone(k).X(~isnan(TerminalZone(k).X)));
-    zoneCenterLat = mean(TerminalZone(k).Y(~isnan(TerminalZone(k).Y)));
+    zoneX = TerminalZone(k).X(~isnan(TerminalZone(k).X));
+    zoneY = TerminalZone(k).Y(~isnan(TerminalZone(k).Y));
+    zoneCenterLon = (min(zoneX) + max(zoneX)) / 2;
+    zoneCenterLat = (min(zoneY) + max(zoneY)) / 2;
     % Find nodes already assigned to this zone.
     assignedNodes = nodeZone(nodeZone(:,2) == k, 1);
     if isempty(assignedNodes)
@@ -85,11 +103,8 @@ for n = 1:numNodes
     NodeService(n).ZoneSet = zonesServed;
 end
 
-%% Assemble RoadSystem Output Structure
-% For RoadSystem.NodeData, the columns are:
-% [NodeID, Longitude, Latitude, ServedPopulation, NodeSeismicFragilityType]
-% Here, ServedPopulation is taken from the aggregated zoneNode (if available),
-% otherwise set to zero; NodeSeismicFragilityType is set as a placeholder (e.g., 1).
+%% Assemble BackboneRoadSystem Output Structure
+% Aggregate the population assigned to each retained road node.
 nodeServedPop = zeros(numNodes,1);
 for n = 1:numNodes
     % Sum population from zoneNode entries for this node.
@@ -113,7 +128,7 @@ end
 
 
 for e=1:size(edgeData,1)
-    orgEID=orgEdgeData(orgEdgeData(:,2)==newNodeIDs(edgeData(e,2)) & orgEdgeData(:,3)==newNodeIDs(edgeData(e,3)),1);
+    orgEID=edgeData(e,7);
     BackboneRoadSystem.Edge(e).ID=edgeData(e,1);
     BackboneRoadSystem.Edge(e).FromNodeID=edgeData(e,2);
     BackboneRoadSystem.Edge(e).ToNodeID=edgeData(e,3);

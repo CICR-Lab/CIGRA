@@ -1,56 +1,45 @@
 function PowerComDamgScenario = generatePowerComSeismicDamgScenario(PowerSystem, PowerComFPs, numSim)
-% generatePowerComDamgScenario generates power component damage scenarios under given seismic conditions.
+% generatePowerComSeismicDamgScenario generates power component damage scenarios under given seismic conditions.
 %
-%   PowerComDamgScenario = generatePowerComDamgScenario(PowerSystem, PowerComFPs, numSim)
+%   PowerComDamgScenario = generatePowerComSeismicDamgScenario(PowerSystem, PowerComFPs, numSim)
 %
 %   Inputs:
-%       PowerSystem: Structure with fields:
-%           NodeData: [NodeID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, Voltage]
-%           EdgeData: [EdgeID, FromNodeID, ToNodeID, Length, RealFlow, MaxFlow, Susceptance, Voltage]
-%           EdgeStr: Structure array with fields .X and .Y
-%           NodeFragility: Structure array with field .SeismicType (a code string)
-%           EdgeFragility: Structure array with field .SeismicType (a code string)
+%       PowerSystem: Structure with a Node structure array. Node.ClassName
+%           identifies the component type used to select restoration parameters.
 %
 %       PowerComFPs: Structure array, where for each seismic scenario realization s
-%           PowerComFPs(s).Node is an N x 4 matrix for nodes containing the
-%           cumulative probabilities for slight, moderate, extensive, and complete damage.
-%           Similarly, PowerComFPs(s).Edge is an E x 4 matrix for edges.
+%           PowerComFPs(s).Node(n).dProb contains the mutually exclusive
+%           probabilities for slight, moderate, extensive, and complete damage.
 %
 %       numSim: Number of damage scenarios (simulations) to generate for each seismic scenario.
 %
 %   Output:
 %       PowerComDamgScenario: A structure array with one element per seismic scenario realization,
 %           with fields:
-%           .Node:  an N x numSim x 2 array; for each node, column1 = binary damage state (1 if damaged, 0 if normal)
-%                   and column2 = repair time if damaged.
-%           .Edge:  an E x numSim x 2 array; for each edge, column1 = binary damage state and column2 = repair time.
+%           .NodeState: N x numSim damage states (0 = none, 1-4 = slight to complete).
+%           .NodeRepairTime: N x numSim repair times in days.
+%           .EdgeState: empty because power-edge damage is not generated here.
 %
 %   The procedure is as follows:
-%     1. Define a RepairTimeSet structure.
+%     1. Read the restoration parameters.
 %     2. For each node:
-%         a. Determine the component type using PowerSystem.NodeFragility(n).SeismicType.
+%         a. Determine the component type using PowerSystem.Node(n).ClassName.
 %         b. Based on the type (substation vs. generation facility), select RepairTime parameters.
-%         c. Determine the zone (z) in which node n is located. Here, the zone is inferred 
-%            from SeismicScenario (e.g. by inpolygon on SeismicScenario(z).X,Y).
-%         d. For each seismic realization h (each row in PowerComFPs(s).Node), draw a random
-%            number r and compare it with the cumulative damage probabilities.
-%         e. For each damage state, generate a repair time from a normal distribution with the
-%            appropriate mean and standard deviation.
-%     3. Repeat similar steps for edges.
-%
-%   Author: [Your Name]
-%   Date: [Date]
+%         c. For each simulation, draw a random number and use the mutually exclusive
+%            damage-state probabilities to select a damage state.
+%         d. For each damage state, generate a nonnegative repair time from the Hazus
+%            normal restoration function by setting negative samples to zero.
 
-%% Step 1: Define RepairTimeSet
+%% Step 1: Read Restoration Parameters
 gsFilename = 'PowerComSeismicFragilityParams.xlsx';
 
-% Read Ground Shaking Fragility Parameters (assumed to be on rows 2:31)
+% Read restoration parameters.
 [~, ~, rawGS] = xlsread(gsFilename, 'RestorationParams');
 nGS = size(rawGS,1) - 1;  % subtract header row
 
 RestorationParams=[];
 for s = 1:nGS
-    % Columns: A: Component, B: Type, D: meanSlight, E: stdSlight, F: meanModerate, ...
+    % Columns: A: Component; B:I: repair-time means and standard deviations by damage state.
     RestorationParams(s).Component   = rawGS{s+1,1};  % Column A
     RestorationParams(s).meanSlight    = rawGS{s+1,2};  % Column B
     RestorationParams(s).stdSlight     = rawGS{s+1,3};  % Column C
@@ -67,87 +56,83 @@ if isempty(PowerSystem) || isempty(PowerComFPs)
     error('PowerSystem and PowerComFPs inputs cannot be empty.');
 end
 
-% Assume that PowerSystem.NodeFragility and EdgeFragility exist.
-if ~isfield(PowerSystem.Node(1), 'SeismicFragilityType') || ~isfield(PowerSystem.Edge(1), 'SeismicFragilityType')
-    error('PowerSystem.Node and PowerSystem.Edge must have SeismicFragilityType fields.');
+% Check the node data used to select restoration parameters.
+if ~isfield(PowerSystem, 'Node') || isempty(PowerSystem.Node)
+    error('PowerSystem.Node cannot be empty.');
+end
+if ~isfield(PowerSystem.Node, 'ClassName')
+    error('PowerSystem.Node must have a ClassName field.');
 end
 
 % Number of seismic scenarios (realizations)
 numScenarios = length(PowerComFPs);
 
-% Number of nodes and edges.
+% Number of nodes.
 numNodes = length(PowerSystem.Node);
-numEdges = length(PowerSystem.Edge);
 
 %% Step 3: Initialize Output Storage
-% For each seismic scenario realization s, we generate damage scenarios for nodes and edges.
-% The output arrays for nodes and edges:
-nodeDamageArray = zeros(numNodes, numSim, 2);  % columns: [damaged_flag, repair_time]
+% For each seismic scenario realization, generate node damage scenarios.
+nodeDamageArray = zeros(numNodes, numSim, 2);  % third dimension: [damage_state, repair_time]
 
 %% Step 4: Loop over each seismic scenario realization.
 for s = 1:numScenarios
-    % Extract the cumulative damage probabilities for nodes for scenario s.
-    % Expected dimension: numNodes x 4, representing slight, moderate, extensive, complete cumulative probabilities.
-    % (Similarly for edges.)
+    % Use the mutually exclusive node damage-state probabilities for scenario s.
 
     % Loop over each node.
     for n = 1:numNodes
-        % 4a. Get component type from NodeFragility.
+        % 4a. Get the component type from Node.ClassName.
         ComType = PowerSystem.Node(n).ClassName;
+        
+        if ~isempty(ComType)
+            k = find(cellfun(@(s) contains(ComType, s), {RestorationParams.Component}), 1);
+        else
+            k=[];
+        end
 
-        k = find(contains(ComType,{RestorationParams.Component}), 1);
-        if ~isempty(k)
-            k=k(1);
-            RepairTime = [RestorationParams(k).meanSlight RestorationParams(k).stdSlight;RestorationParams(k).meanModerate RestorationParams(k).stdModerate;
-                RestorationParams(k).meanExtensive RestorationParams(k).stdExtensive; RestorationParams(k).meanComplete RestorationParams(k).stdComplete];  % 2 x 4 matrix
+        if isempty(k)
+            error('No restoration parameters found for node %d with ClassName "%s".', n, ComType);
+        end
+        RepairTime = [RestorationParams(k).meanSlight RestorationParams(k).stdSlight;RestorationParams(k).meanModerate RestorationParams(k).stdModerate;
+            RestorationParams(k).meanExtensive RestorationParams(k).stdExtensive; RestorationParams(k).meanComplete RestorationParams(k).stdComplete];  % 4 x 2 matrix
 
-
-            % 4b. Determine the zone ID for node n.
-            % Here we assume that there is a function or procedure to match a node to a zone.
-            % For example, using inpolygon with SeismicScenario boundaries.
-            % For simplicity, assume node n belongs to zone z = 1 (modify as needed).
-            z = 1;  % (Replace with actual zone identification based on node coordinates and SeismicScenario boundaries.)
-
-            % Retrieve the damage probabilities for node n from scenario s.
-            % Assume that nodeCumProbs(n,:) returns a row vector of 4 cumulative probabilities:
-            % p_slight, p_moderate, p_extensive, p_complete.
-            p_cum = PowerComFPs(s).Node(n).dProb;
-            % Compute the incremental probabilities:
-            sdPGA = p_cum(1);
-            mdPGA = p_cum(2);
-            edPGA = p_cum(3);
-            cdPGA = p_cum(4);
+        % Retrieve the damage probabilities for node n from scenario s.
+        % dProb contains four mutually exclusive probabilities:
+        % p_slight, p_moderate, p_extensive, p_complete.
+        p_cum = PowerComFPs(s).Node(n).dProb;
+        sdPGA = p_cum(1);
+        mdPGA = p_cum(2);
+        edPGA = p_cum(3);
+        cdPGA = p_cum(4);
             
-            % Loop over the number of simulations.
-            for sim = 1:numSim
-                r = rand;  % random number between 0 and 1.
-                if r <= sdPGA
-                    % Slight damage.
-                    nodeDamageArray(n, sim, 1) = 1;  % damaged flag.
-                    repair_time = normrnd(RepairTime(1,1), RepairTime(1,2));
-                    nodeDamageArray(n, sim, 2) = repair_time;
-                elseif r <= (sdPGA + mdPGA)
-                    % Moderate damage.
-                    nodeDamageArray(n, sim, 1) = 2;
-                    repair_time = normrnd(RepairTime(2,1), RepairTime(2,2));
-                    nodeDamageArray(n, sim, 2) = repair_time;
-                elseif r <= (sdPGA + mdPGA + edPGA)
-                    % Extensive damage.
-                    nodeDamageArray(n, sim, 1) = 3;
-                    repair_time = normrnd(RepairTime(3,1), RepairTime(3,2));
-                    nodeDamageArray(n, sim, 2) = repair_time;
-                elseif r <= (sdPGA + mdPGA + edPGA + cdPGA)
-                    % Complete damage.
-                    nodeDamageArray(n, sim, 1) = 4;
-                    repair_time = normrnd(RepairTime(4,1), RepairTime(4,2));
-                    nodeDamageArray(n, sim, 2) = repair_time;
-                else
-                    % No damage.
-                    nodeDamageArray(n, sim, 1) = 0;
-                    nodeDamageArray(n, sim, 2) = 0;
-                end
+        % Loop over the number of simulations.
+        for sim = 1:numSim
+            r = rand;  % random number between 0 and 1.
+            if r <= sdPGA
+                % Slight damage.
+                nodeDamageArray(n, sim, 1) = 1;
+                repair_time = max(0, normrnd(RepairTime(1,1), RepairTime(1,2)));
+                nodeDamageArray(n, sim, 2) = repair_time;
+            elseif r <= (sdPGA + mdPGA)
+                % Moderate damage.
+                nodeDamageArray(n, sim, 1) = 2;
+                repair_time = max(0, normrnd(RepairTime(2,1), RepairTime(2,2)));
+                nodeDamageArray(n, sim, 2) = repair_time;
+            elseif r <= (sdPGA + mdPGA + edPGA)
+                % Extensive damage.
+                nodeDamageArray(n, sim, 1) = 3;
+                repair_time = max(0, normrnd(RepairTime(3,1), RepairTime(3,2)));
+                nodeDamageArray(n, sim, 2) = repair_time;
+            elseif r <= (sdPGA + mdPGA + edPGA + cdPGA)
+                % Complete damage.
+                nodeDamageArray(n, sim, 1) = 4;
+                repair_time = max(0, normrnd(RepairTime(4,1), RepairTime(4,2)));
+                nodeDamageArray(n, sim, 2) = repair_time;
+            else
+                % No damage.
+                nodeDamageArray(n, sim, 1) = 0;
+                nodeDamageArray(n, sim, 2) = 0;
             end
-        end % end node loop
+        end
     end
 
     %% Step 5: Assemble Output Structure for Scenario s.

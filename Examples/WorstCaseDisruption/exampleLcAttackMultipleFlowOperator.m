@@ -2,24 +2,32 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
 
 InterCIS_Type    = 'PowerGasWater';  % PowerGas | PowerWater | PowerGasWater
-Power_Model_Type = 'DCPF';        % MF | DCPF 
-AttackRadius     = 5;             % Attack Radius
+Power_Model_Type = 'MF';        % MF | DCPF 
+AttackRadius     = 3;             % Attack Radius
+if ~ismember(Power_Model_Type, ["MF","DCPF"])
+    error('Invalid input. Choose Power_Model_Type from: MF, DCPF.');
+end
 %% set parameters and initialize
-params           = struct;
+OperatorParams           = struct;
+AttackParams       = struct;
+AttackParams.Radius = AttackRadius;
+AttackParams.InvulnerableCom = [];  % Empty, or local Node/Edge fields for each applicable system
 
 AttackStrategy   = [];AttackCenter     = [];
 PowerSysFunLoss  = [];GasSysFunLoss    = [];WaterSysFunLoss  = [];
 PowerComState    = [];GasComState      = [];WaterComState    = [];
 %% Localized worst case attack of interdependent power-gas systems
 if strcmp(InterCIS_Type,'PowerGas')
-    load(strcat(CasePath,'\Interdependency\PowerGasSystem_PG5_GP1.mat'),'PowerGasSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerGasSystem_PG5_GP1.mat'),'PowerGasSystem');
     InterdependentSystem              = PowerGasSystem;
     PowerSystem                       = PowerGasSystem.PowerSystem;
     GasSystem                         = PowerGasSystem.GasSystem;
@@ -29,20 +37,11 @@ if strcmp(InterCIS_Type,'PowerGas')
     systems   = {PowerSystem, GasSystem};
     MergedCIS = Merge_CIS(systems);
 
-    AttackPara              = struct;
-    AttackPara.Radius       = AttackRadius;
-    AttackPara.InvulnerableCom = zeros(MergedCIS.TotCom, 1);
-
-    ComSet = maximal_component_set_3D(MergedCIS, AttackPara.Radius);
-
-    while ~ismember(Power_Model_Type, ["MF","DCPF"])
-        fprintf('Invalid input. Please set Power_Model_Type as MF or DCPF.\n');
-        break;
-    end
+    ComSet = maximal_component_set_3D(MergedCIS, AttackParams.Radius);
 end
 %% Localized worst case attack of interdependent power-water systems
 if strcmp(InterCIS_Type,'PowerWater')
-    load(strcat(CasePath,'\Interdependency\PowerWaterSystem_PW5_WP1.mat'),'PowerWaterSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerWaterSystem_PW5_WP1.mat'),'PowerWaterSystem');
     InterdependentSystem                 = PowerWaterSystem;
     PowerSystem                          = PowerWaterSystem.PowerSystem;
     WaterSystem                          = PowerWaterSystem.WaterSystem;
@@ -52,20 +51,11 @@ if strcmp(InterCIS_Type,'PowerWater')
     systems   = {PowerSystem, WaterSystem};
     MergedCIS = Merge_CIS(systems);
 
-    AttackPara              = struct;
-    AttackPara.Radius       = AttackRadius;
-    AttackPara.InvulnerableCom = zeros(MergedCIS.TotCom, 1);
-
-    ComSet = maximal_component_set_3D(MergedCIS, AttackPara.Radius);
-
-    while ~ismember(Power_Model_Type, ["MF","DCPF"])
-        fprintf('Invalid input. Please set Power_Model_Type as MF, DCPF.\n');
-        break;
-    end
+    ComSet = maximal_component_set_3D(MergedCIS, AttackParams.Radius);
 end
 %% Localized worst case attack of interdependent power-gas-water systems
 if strcmp(InterCIS_Type,'PowerGasWater')
-    load(strcat(CasePath,'\Interdependency\PowerGasWaterSystem_PG5_GP1_PW5_WP1.mat'),'PowerGasWaterSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerGasWaterSystem_PG5_GP1_PW5_WP1.mat'),'PowerGasWaterSystem');
     InterdependentSystem                   = PowerGasWaterSystem;
     PowerSystem                            = PowerGasWaterSystem.PowerSystem;
     GasSystem                              = PowerGasWaterSystem.GasSystem;
@@ -78,65 +68,38 @@ if strcmp(InterCIS_Type,'PowerGasWater')
     systems   = {PowerSystem, GasSystem, WaterSystem};
     MergedCIS = Merge_CIS(systems);
 
-    AttackPara              = struct;
-    AttackPara.Radius       = AttackRadius;
-    AttackPara.InvulnerableCom = zeros(MergedCIS.TotCom, 1);
-    
-    ComSet = maximal_component_set_3D(MergedCIS, AttackPara.Radius);
-
-    while ~ismember(Power_Model_Type, ["MF","DCPF"])
-        fprintf('Invalid input. Please set Power_Model_Type as MF, DCPF.\n');
-        break;
-    end
+    ComSet = maximal_component_set_3D(MergedCIS, AttackParams.Radius);
 end
 %% run the specified model
 switch InterCIS_Type
     case 'PowerGas'
         switch Power_Model_Type
             case 'MF'
-                [AttackStrategy, AttackCenter, PowerSysFunLoss, GasSysFunLoss, ...
-                    PowerComState, GasComState] = ...
-                    LcAttackerRobPowerMFGasMFOperator( ...
-                        PowerSystem, GasSystem, PowerGasInterdependency, ...
-                        ComSet, params, AttackPara, TerminalZone);
+                [AttackStrategy, AttackCenter, PowerSysFunLoss, GasSysFunLoss, PowerComState, GasComState] = ...
+                    LcAttackerPowerMFGasMFOperator(PowerSystem, GasSystem, PowerGasInterdependency, ComSet, OperatorParams, AttackParams, TerminalZone);
             case 'DCPF'
-                [AttackStrategy, AttackCenter, PowerSysFunLoss, GasSysFunLoss, ...
-                    PowerComState, GasComState] = ...
-                    LcAttackerRobPowerDCPFGasMFOperator( ...
-                        PowerSystem, GasSystem, PowerGasInterdependency, ...
-                        ComSet, params, AttackPara, TerminalZone);
+                [AttackStrategy, AttackCenter, PowerSysFunLoss, GasSysFunLoss, PowerComState, GasComState] = ...
+                    LcAttackerPowerDCPFGasMFOperator(PowerSystem, GasSystem, PowerGasInterdependency, ComSet, OperatorParams, AttackParams, TerminalZone);
         end
     case 'PowerWater'
         switch Power_Model_Type
             case 'MF'
-                [AttackStrategy, AttackCenter, PowerSysFunLoss, WaterSysFunLoss, ...
-                    PowerComState, WaterComState] = ...
-                    LcAttackerRobPowerMFWaterMFOperator( ...
-                        PowerSystem, WaterSystem, PowerWaterInterdependency, ...
-                        ComSet, params, AttackPara, TerminalZone);
+                [AttackStrategy, AttackCenter, PowerSysFunLoss, WaterSysFunLoss, PowerComState, WaterComState] = ...
+                    LcAttackerPowerMFWaterMFOperator(PowerSystem, WaterSystem, PowerWaterInterdependency, ComSet, OperatorParams, AttackParams, TerminalZone);
             case 'DCPF'
-                [AttackStrategy, AttackCenter, PowerSysFunLoss, WaterSysFunLoss, ...
-                    PowerComState, WaterComState] = ...
-                    LcAttackerRobPowerDCPFWaterMFOperator( ...
-                        PowerSystem, WaterSystem, PowerWaterInterdependency, ...
-                        ComSet, params, AttackPara, TerminalZone);
+                [AttackStrategy, AttackCenter, PowerSysFunLoss, WaterSysFunLoss, PowerComState, WaterComState] = ...
+                    LcAttackerPowerDCPFWaterMFOperator(PowerSystem, WaterSystem, PowerWaterInterdependency, ComSet, OperatorParams, AttackParams, TerminalZone);
         end
     case 'PowerGasWater'
         switch Power_Model_Type
             case 'MF'
-                [AttackStrategy, AttackCenter, PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, ...
-                    PowerComState, GasComState, WaterComState] = ...
-                    LcAttackerRobPowerMFGasMFWaterMFOperator( ...
-                        PowerSystem, GasSystem, WaterSystem, ...
-                        PowerGasInterdependency, PowerWaterInterdependency, ...
-                        ComSet, params, AttackPara, TerminalZone);
+                [AttackStrategy, AttackCenter, PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, PowerComState, GasComState, WaterComState] = ...
+                    LcAttackerPowerMFGasMFWaterMFOperator(PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency, ...
+                    ComSet, OperatorParams, AttackParams, TerminalZone);
             case 'DCPF'
-                [AttackStrategy, AttackCenter, PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, ...
-                    PowerComState, GasComState, WaterComState] = ...
-                    LcAttackerRobPowerDCPFGasMFWaterMFOperator( ...
-                        PowerSystem, GasSystem, WaterSystem, ...
-                        PowerGasInterdependency, PowerWaterInterdependency, ...
-                        ComSet, params, AttackPara, TerminalZone);
+                [AttackStrategy, AttackCenter, PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, PowerComState, GasComState, WaterComState] = ...
+                    LcAttackerPowerDCPFGasMFWaterMFOperator(PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
+                    ComSet, OperatorParams, AttackParams, TerminalZone);
         end
 end
 
@@ -145,18 +108,18 @@ end
 layoutOptions1 = struct('SystemType', 'power', 'FlowSource', 'custom','EdgeFlow',PowerComState.Edge(:, 2), ...
     'NodeGen',PowerComState.Node(:, 3), 'NodeDem', PowerComState.Node(:, 2));
 Region1 = struct('Shape',  'circle','Center', [lon, lat],'Radius', AttackRadius);
-mapCircledRegion(AreaBoundary, PowerSystem, 'Flow', layoutOptions1, Region1);
+mapCISRegionOverlay(AreaBoundary, PowerSystem, 'Flow', layoutOptions1, Region1);
 if contains(InterCIS_Type, "Gas")
-    layoutOptions2 = struct('SystemType', 'power', 'FlowSource', 'custom','EdgeFlow',GasComState.Edge(:, 2), ...
+    layoutOptions2 = struct('SystemType', 'gas', 'FlowSource', 'custom','EdgeFlow',GasComState.Edge(:, 2), ...
         'NodeGen',GasComState.Node(:, 3), 'NodeDem', GasComState.Node(:, 2));
     Region2 = struct('Shape',  'circle','Center', [lon, lat],'Radius', AttackRadius);
-    mapCircledRegion(AreaBoundary, GasSystem, 'Flow', layoutOptions2, Region2);
+    mapCISRegionOverlay(AreaBoundary, GasSystem, 'Flow', layoutOptions2, Region2);
 end
 if contains(InterCIS_Type, "Water")
-    layoutOptions3 = struct('SystemType', 'power', 'FlowSource', 'custom','EdgeFlow',WaterComState.Edge(:, 2), ...
+    layoutOptions3 = struct('SystemType', 'water', 'FlowSource', 'custom','EdgeFlow',WaterComState.Edge(:, 2), ...
         'NodeGen',WaterComState.Node(:, 3), 'NodeDem', WaterComState.Node(:, 2));
     Region3 = struct('Shape',  'circle','Center', [lon, lat],'Radius', AttackRadius);
-    mapCircledRegion(AreaBoundary, WaterSystem, 'Flow', layoutOptions3, Region3);
+    mapCISRegionOverlay(AreaBoundary, WaterSystem, 'Flow', layoutOptions3, Region3);
 end
 
 %% print result

@@ -2,16 +2,17 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
 
 CIS_Type='power'; %% power | gas | water
-Model_Type='DCPF'; %% MF | DCPF
+Model_Type='MF'; %% MF | DCPF (DCPF is available only for power systems)
 Scenario_ID=1;
-
 %% set parameters and initialize
 params=struct;
 params.SystemType = CIS_Type;
@@ -21,45 +22,42 @@ ComState=[];
 ZoneState=[];
 %% calculate the functionality loss for power system
 if strcmp(CIS_Type,'power')
-    load(strcat(CasePath,'\Power\PowerSystem.mat'),'PowerSystem');
-    load(strcat(CasePath,'SeismicScenario\PowerComDamgScenarioGivenMaEpID1.mat'),'PowerComDamgScenario');
+    load(fullfile(CasePath, 'Power', 'PowerSystem.mat'),'PowerSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'PowerComDamgScenarioGivenMaEpID1.mat'),'PowerComDamgScenario');
     CIS=PowerSystem;
     ComDamgScenario=PowerComDamgScenario;
     
     while ~ismember(Model_Type, ["MF","DCPF"])
-        fprintf('Invalid input. Please set Model_Type as MF, DCPF.\n');
-        break;
+        error('Invalid input. Please set Model_Type as MF or DCPF.');
     end
 end
 
 %% calculate the functionality loss for gas system
 if strcmp(CIS_Type,'gas')
-    load(strcat(CasePath,'\Gas\GasSystem.mat'),'GasSystem');
-    load(strcat(CasePath,'SeismicScenario\GasComDamgScenarioGivenMaEpID1.mat'),'GasComDamgScenario');
+    load(fullfile(CasePath, 'Gas', 'GasSystem.mat'),'GasSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'GasComDamgScenarioGivenMaEpID1.mat'),'GasComDamgScenario');
     CIS=GasSystem;
     ComDamgScenario=GasComDamgScenario;
     
     while ~ismember(Model_Type, ["MF"])
-        fprintf('Invalid input. Please set Model_Type as MF.\n');
-        break;
+        error('Invalid input. Please set Model_Type as MF.');
     end
 end
 
 %% calculate the functionality loss for water system
 if strcmp(CIS_Type,'water')
-    load(strcat(CasePath,'\Water\WaterSystem.mat'),'WaterSystem');
-    load(strcat(CasePath,'SeismicScenario\WaterComDamgScenarioGivenMaEpID1.mat'),'WaterComDamgScenario');
+    load(fullfile(CasePath, 'Water', 'WaterSystem.mat'),'WaterSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'WaterComDamgScenarioGivenMaEpID1.mat'),'WaterComDamgScenario');
     CIS=WaterSystem;
     ComDamgScenario=WaterComDamgScenario;
     
     while ~ismember(Model_Type, ["MF"])
-        fprintf('Invalid input. Please set Model_Type as MF.\n');
-        break;
+        error('Invalid input. Please set Model_Type as MF.');
     end
 end
 
 %% get component damage scenario
-% K¡Á2 matrix [component type (1=node,2=edge),component id]
+% K x 2 matrix [component type (1=node, 2=edge), component ID]
 NodeDamgScenario=[]; EdgeDamgScenario=[];
 if ~isempty(ComDamgScenario.NodeState)
     ndIdx = find((ComDamgScenario.NodeState(:,Scenario_ID)>= 3)&(ComDamgScenario.NodeRepairTime(:,Scenario_ID)> 0));
@@ -82,7 +80,6 @@ switch Model_Type
     case 'DCPF'
         [SysFunLoss, ComState, ZoneState] = SingleDCPF(CIS, CISComDamgScenario, params, TerminalZone);
 end
-
 %% display system operation state
 % system - level
 opt1 = struct('SystemType', CIS_Type,  'FlowSource','custom', ...

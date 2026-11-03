@@ -1,15 +1,13 @@
 function TerminalZone = integrateLandslideLiquefactionWtdInfo(TerminalZone, GlobalLandslideSusceptibilityMap, GlobalLiquefactionMap, GlobalWtdMap)
-% integrateLandslideLiquefactionWtdInfo Updates the TerminalZone structures with
-% landslide and liquefaction susceptibility and water table (wtd) data.
+% integrateLandslideLiquefactionWtdInfo Adds landslide susceptibility,
+% liquefaction susceptibility, and water table depth data to TerminalZone.
 %
 %   TerminalZone = integrateLandslideLiquefactionWtdInfo(TerminalZone, GlobalLandslideSusceptibilityMap, GlobalLiquefactionMap, GlobalWtdMap)
 %
 %   Inputs:
 %       TerminalZone: Structure array, one per zone, with fields:
-%           .clon - Longitude of the centroid (optional)
-%           .clat - Latitude of the centroid (optional)
-%           .X    - Vector of boundary longitudes (NaN-terminated)
-%           .Y    - Vector of boundary latitudes (NaN-terminated)
+%           .X - Vector of boundary longitudes; NaN values are ignored
+%           .Y - Vector of boundary latitudes; NaN values are ignored
 %
 %       GlobalLandslideSusceptibilityMap: File name (or path) of the global landslide susceptibility GeoTIFF.
 %       GlobalLiquefactionMap:           File name (or path) of the global liquefaction GeoTIFF.
@@ -17,40 +15,33 @@ function TerminalZone = integrateLandslideLiquefactionWtdInfo(TerminalZone, Glob
 %
 %   Output:
 %       TerminalZone: Updated structure array with new fields:
-%                     .landslide_sus, .liquefaction_sus, and .wtd.
+%                     .LandslideSus, .LiquefactionSus, and .WTD.
 %
-%   The function performs the following steps:
-%     1. Verifies inputs. If certain susceptibility fields are missing,
-%        TerminalZone is updated via integrateLandslideLiquefactionWtdInfo (if needed).
-%     2. For each TerminalZone, it computes a local window size (extent) from the boundary.
-%     3. For each zone, using a dense grid of sample points over that window,
-%        the GeoTIFF data are sampled and a weighted average is computed.
-%     4. The computed weighted average values are assigned to the corresponding fields.
-%
-%   Author: [Your Name]
-%   Date: [Date]
+%   For each zone, the function uses the midpoint and extent of the
+%   axis-aligned bounding rectangle defined by X and Y. Each candidate raster
+%   cell is subdivided into a 10-by-10 sampling grid, and samples inside the
+%   bounding rectangle are retained. Categorical landslide and liquefaction
+%   values are converted with the mappings below and averaged by sample count.
+%   Water table depth is rounded to two decimals and averaged by sample count.
+%   NoData samples in the bundled maps are excluded. The function reports an
+%   error if a zone has no valid samples for any one of the three maps.
 
 %% Step 0: Input Checking
 if isempty(TerminalZone)
     error('Input TerminalZone is empty.');
 end
-nargin
 if nargin < 4
     error('All four inputs (TerminalZone, GlobalLandslideSusceptibilityMap, GlobalLiquefactionMap, GlobalWtdMap) are required.');
 end
 
-%% Step 1: Initialize zone_data
+%% Step 1: Initialize result storage
 numZones = length(TerminalZone);
-% zone_data columns: 
-% 1: zone id; 2: centroid longitude; 3: centroid latitude; 
-% 4: landslide value; 5: liquefaction value; 6: water table depth (wtd)
+% Columns: zone ID, landslide susceptibility, liquefaction susceptibility,
+% and water table depth.
 zone_data = [(1:numZones)', zeros(numZones,3)];
 
-%% Step 2: Compute local window extents for each zone
-% (Though the original code computed a global max, here we compute zone-specific extents.)
-% We will use these extents to create the sampling grid.
-% Also, define sample_step.
-sample_step = 10; % you can adjust this parameter
+%% Step 2: Set the number of samples along each raster-cell direction
+sample_step = 10;
 
 %% Step 3: Landslide Susceptibility Calculation
 try
@@ -59,25 +50,31 @@ catch
     [landslide_data, landslide_R] = geotiffread(GlobalLandslideSusceptibilityMap);
 end
 landslide_data = double(landslide_data);
-% Pre-defined weight values for categorical landslide susceptibility (example values)
+% Susceptibility values assigned to raster categories 1 through 5.
 landslide_values = [0.01, 0.03, 0.1, 0.2, 0.3];
+landslide_nodata = 127;
 
 landslide_lat_step = landslide_R.CellExtentInLatitude;
 landslide_lon_step = landslide_R.CellExtentInLongitude;
 
 for r = 1:numZones
-    % Use provided centroid if available, else compute from boundary X and Y.
-    rlog = mean(TerminalZone(r).X(~isnan(TerminalZone(r).X)));
-    rlat = mean(TerminalZone(r).Y(~isnan(TerminalZone(r).Y)));
-    % For local window, compute extent from zone boundary.
-    local_lon_step = max(TerminalZone(r).X) - min(TerminalZone(r).X);
-    local_lat_step = max(TerminalZone(r).Y) - min(TerminalZone(r).Y);
+    % Use the midpoint and extent of the zone's bounding rectangle.
+    zone_x = TerminalZone(r).X(~isnan(TerminalZone(r).X));
+    zone_y = TerminalZone(r).Y(~isnan(TerminalZone(r).Y));
+    min_lon = min(zone_x);
+    max_lon = max(zone_x);
+    min_lat = min(zone_y);
+    max_lat = max(zone_y);
+    rlog = (min_lon + max_lon) / 2;
+    rlat = (min_lat + max_lat) / 2;
+    local_lon_step = max_lon - min_lon;
+    local_lat_step = max_lat - min_lat;
     
-    % Determine the starting pixel indices for this zone.
+    % Locate the raster cell containing the bounding-rectangle midpoint.
     yid = floor((landslide_R.LatitudeLimits(2) - rlat) / landslide_lat_step) + 1;
     xid = floor((rlog - landslide_R.LongitudeLimits(1)) / landslide_lon_step) + 1;
     
-    % Determine the number of pixels to sample in each direction.
+    % Size a conservative candidate raster window around the midpoint.
     nlat = 2 * ceil(local_lat_step / landslide_lat_step) + 1;
     nlon = 2 * ceil(local_lon_step / landslide_lon_step) + 1;
     num_samples = nlat * nlon * sample_step^2;
@@ -100,8 +97,12 @@ for r = 1:numZones
             end
         end
     end
-    % Select sample points within half the local window around the centroid.
+    % Retain samples inside the zone's bounding rectangle.
     fdata = sample_data(abs(sample_data(:,1)-rlat) <= local_lat_step/2 & abs(sample_data(:,2)-rlog) <= local_lon_step/2, 3);
+    fdata = fdata(isfinite(fdata) & fdata ~= landslide_nodata);
+    if isempty(fdata)
+        error('No valid landslide susceptibility samples were found for TerminalZone(%d).', r);
+    end
     % Compute weighted average:
     zone_data(r,2) = (sum(fdata==1)*landslide_values(1) + sum(fdata==2)*landslide_values(2) + ...
                        sum(fdata==3)*landslide_values(3) + sum(fdata==4)*landslide_values(4) + ...
@@ -116,15 +117,22 @@ catch
 end
 liq_data = double(liq_data);
 liq_values = [0.02; 0.05; 0.1; 0.2; 0.25];
+liq_nodata = 255;
 liq_lat_step = liq_R.CellExtentInLatitude;
 liq_lon_step = liq_R.CellExtentInLongitude;
 sample_step = 10;
 
 for r = 1:numZones
-    rlog = mean(TerminalZone(r).X(~isnan(TerminalZone(r).X)));
-    rlat = mean(TerminalZone(r).Y(~isnan(TerminalZone(r).Y)));
-    local_lon_step = max(TerminalZone(r).X) - min(TerminalZone(r).X);
-    local_lat_step = max(TerminalZone(r).Y) - min(TerminalZone(r).Y);
+    zone_x = TerminalZone(r).X(~isnan(TerminalZone(r).X));
+    zone_y = TerminalZone(r).Y(~isnan(TerminalZone(r).Y));
+    min_lon = min(zone_x);
+    max_lon = max(zone_x);
+    min_lat = min(zone_y);
+    max_lat = max(zone_y);
+    rlog = (min_lon + max_lon) / 2;
+    rlat = (min_lat + max_lat) / 2;
+    local_lon_step = max_lon - min_lon;
+    local_lat_step = max_lat - min_lat;
     
     yid = floor((liq_R.LatitudeLimits(2)-rlat)/liq_lat_step) + 1;
     xid = floor((rlog-liq_R.LongitudeLimits(1))/liq_lon_step) + 1;
@@ -150,6 +158,10 @@ for r = 1:numZones
         end
     end
     fdata = sample_data(abs(sample_data(:,1)-rlat) <= local_lat_step/2 & abs(sample_data(:,2)-rlog) <= local_lon_step/2, 3);
+    fdata = fdata(isfinite(fdata) & fdata ~= liq_nodata);
+    if isempty(fdata)
+        error('No valid liquefaction susceptibility samples were found for TerminalZone(%d).', r);
+    end
     zone_data(r,3) = (sum(fdata==1)*liq_values(1) + sum(fdata==2)*liq_values(2) + ...
                        sum(fdata==3)*liq_values(3) + sum(fdata==4)*liq_values(4) + ...
                        sum(fdata==5)*liq_values(5)) / length(fdata);
@@ -161,14 +173,21 @@ try
 catch
     [wtd_data, wtd_R] = geotiffread(GlobalWtdMap);
 end
+wtd_nodata = -9999;
 wtd_lat_step = wtd_R.CellExtentInLatitude;
 wtd_lon_step = wtd_R.CellExtentInLongitude;
 sample_step = 10;
 for r = 1:numZones
-    rlog = mean(TerminalZone(r).X(~isnan(TerminalZone(r).X)));
-    rlat = mean(TerminalZone(r).Y(~isnan(TerminalZone(r).Y)));
-    local_lon_step = max(TerminalZone(r).X) - min(TerminalZone(r).X);
-    local_lat_step = max(TerminalZone(r).Y) - min(TerminalZone(r).Y);
+    zone_x = TerminalZone(r).X(~isnan(TerminalZone(r).X));
+    zone_y = TerminalZone(r).Y(~isnan(TerminalZone(r).Y));
+    min_lon = min(zone_x);
+    max_lon = max(zone_x);
+    min_lat = min(zone_y);
+    max_lat = max(zone_y);
+    rlog = (min_lon + max_lon) / 2;
+    rlat = (min_lat + max_lat) / 2;
+    local_lon_step = max_lon - min_lon;
+    local_lat_step = max_lat - min_lat;
     
     yid = floor((wtd_R.LatitudeLimits(2)-rlat)/wtd_lat_step) + 1;
     xid = floor((rlog-wtd_R.LongitudeLimits(1))/wtd_lon_step) + 1;
@@ -195,6 +214,10 @@ for r = 1:numZones
     end
     % Round to 2 decimals.
     fdata = round(sample_data(abs(sample_data(:,1)-rlat) <= local_lat_step/2 & abs(sample_data(:,2)-rlog) <= local_lon_step/2,3),2);
+    fdata = fdata(isfinite(fdata) & fdata ~= wtd_nodata);
+    if isempty(fdata)
+        error('No valid water table depth samples were found for TerminalZone(%d).', r);
+    end
     unique_vals = unique(fdata);
     zone_value = 0;
     for h = 1:length(unique_vals)

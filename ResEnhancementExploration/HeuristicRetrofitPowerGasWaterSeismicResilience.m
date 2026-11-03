@@ -10,7 +10,7 @@ function [PowerRetroID, GasRetroID, WaterRetroID, PowerSysResGain, GasSysResGain
 %
 % INPUTS:
 %   PowerSystem, GasSystem, WaterSystem:
-%       Each is a struct with fields .Node (1¡ÁN) and .Edge (1¡ÁE).
+%       Each is a struct with fields .Node (1xN) and .Edge (1xE).
 %       - PowerSystem.Node fields include:
 %           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %           Longitude, Latitude, ServedPopulation, Voltage, ServiceZone,
@@ -36,27 +36,27 @@ function [PowerRetroID, GasRetroID, WaterRetroID, PowerSysResGain, GasSysResGain
 %           .PowerToWater: [PowerNodeID, WaterNodeID, TargetPowerFlow]
 %           .WaterToPower: [WaterNodeID, PowerNodeID, TargetPowerFlow]
 %
-%   SeismicMagnitudeEpicenter : Q¡Á5 matrix defining sampled seismic scenarios.
+%   SeismicMagnitudeEpicenter : Qx5 matrix defining sampled seismic scenarios.
 %          Columns: [1 Scenario_ID, 2 Magnitude, 3 Longitude, 4 Latitude, 5 Normalized_Probability]
 %
 %   TerminalZone : structure array defining spatial zone divisions (for site-based
 %          hazard computation). Each element includes:
-%           X, Y    ¡ª boundary coordinates (NaN-terminated)
-%           clon, clat ¡ª (optional) centroid longitude and latitude; if absent,
+%           X, Y       : boundary coordinates (NaN-terminated)
+%           clon, clat : (optional) centroid longitude and latitude; if absent,
 %                         computed as mean(X), mean(Y)
 %
 %   params : struct of model options and costs
 %       Required:
-%         .RepairStrategy      ¡ª 'Rule' | 'Heuristic'
-%         .ScheMethod          ¡ª 'SA' | 'GA' (if RepairStrategy='Heuristic')
-%         .PowerFunMetric      ¡ª 'DCPF' | 'MF'   
-%         .numSim              ¡ª positive integer
-%         .PowerRetrofitUnitCost ¡ª Np¡Á1 nonnegative numeric vector
-%         .GasRetrofitUnitCost   ¡ª Ng¡Á1 nonnegative numeric vector
-%         .WaterRetrofitUnitCost ¡ª Nw¡Á1 nonnegative numeric vector
-%         .Budget                ¡ª nonnegative scalars
+%         .RepairStrategy        : 'Rule' | 'Heuristic'
+%         .ScheMethod            : 'SA' | 'GA' (if RepairStrategy='Heuristic')
+%         .PowerFunMetric        : 'DCPF' | 'MF'
+%         .numSim                : positive integer
+%         .PowerRetrofitUnitCost : Npx1 nonnegative numeric vector
+%         .GasRetrofitUnitCost   : Ngx1 nonnegative numeric vector
+%         .WaterRetrofitUnitCost : Nwx1 nonnegative numeric vector
+%         .Budget                : nonnegative scalar
 %       Optional (Rule only):
-%         .PowerRuleType, .GasRuleType, .WaterRuleType ¡ª {'degree','betweenness','proximity'}
+%         .PowerRuleType, .GasRuleType, .WaterRuleType : {'degree','betweenness','proximity'}
 %       Optional (Heuristic only):
 %         .ScheMethod, .GAMaxIter, .SAIter, ... 
 %
@@ -65,12 +65,13 @@ function [PowerRetroID, GasRetroID, WaterRetroID, PowerSysResGain, GasSysResGain
 %   GasRetroID   : column vector of selected gas-node IDs
 %   WaterRetroID : column vector of selected water-node IDs
 %
-%   PowerSysResGain : 1¡Á3 row vector [¦¤R_power, R_before_power, R_after_power]
-%   GasSysResGain   : 1¡Á3 row vector [¦¤R_gas,   R_before_gas,   R_after_gas  ]
-%   WaterSysResGain : 1¡Á3 row vector [¦¤R_water, R_before_water, R_after_water]
-%     where ¦¤R_x = R_before_x ? R_after_x is the total improvement for system x
+%   PowerSysResGain : 1x3 row vector [DeltaR_power, R_before_power, R_after_power]
+%   GasSysResGain   : 1x3 row vector [DeltaR_gas, R_before_gas, R_after_gas]
+%   WaterSysResGain : 1x3 row vector [DeltaR_water, R_before_water, R_after_water]
+%     where DeltaR_x = R_before_x - R_after_x is the total improvement for system x
 %     when all retrofits (across PGW) selected by MILP are applied simultaneously.
-%  PowerZoneResGain,GasZoneResGain,WaterZoneResGain: Z¡Á3 row vector [Res_Improvement, Zone ResLoss_Before, Zone ResLoss_After]
+%   PowerZoneResGain, GasZoneResGain, WaterZoneResGain: Zx3 matrices
+%     [Res_Improvement, Zone ResLoss_Before, Zone ResLoss_After]
 %% Step 1: Validate inputs
 % Basic presence checks
 if nargin < 8
@@ -102,7 +103,7 @@ if ~isnumeric(params.RepairCrew) || numel(params.RepairCrew)~=3 || any(params.Re
     error('params.RepairCrew must be a 1x3 array of positive integers, e.g., [P G W].');
 end
 
-% RepairStrategy-specific requirements + SystemType¨CFunMetric compatibility
+% RepairStrategy-specific requirements and system-function metric compatibility
 validStrategies = {'Rule','Heuristic'};
 if ~ismember(params.RepairStrategy, validStrategies)
     error('Invalid params.RepairStrategy. Allowed: Rule | Heuristic');
@@ -135,6 +136,7 @@ if ~ismember(params.PowerFunMetric, {'DCPF','MF'})
 end
 
 % Validate retrofit cost for each system
+expectedCostLengths = [numel(PowerSystem.Node), numel(GasSystem.Node), numel(WaterSystem.Node)];
 for s = 1:numel(sysList)
     sys = sysList{s};
     % ---- RetrofitUnitCost check ----
@@ -145,6 +147,9 @@ for s = 1:numel(sysList)
     costVec = params.(fieldCost);
     if ~isnumeric(costVec) || ~isvector(costVec) || any(costVec < 0) || any(~isfinite(costVec))
         error('params.%s must be a finite, non-negative numeric vector.', fieldCost);
+    end
+    if numel(costVec) ~= expectedCostLengths(s)
+        error('params.%s must contain one value per %s node.', fieldCost, lower(sys));
     end
 end
 
@@ -266,7 +271,7 @@ end
 % Non-negative importance for knapsack (no incentive to pick harmful nodes)
 retrofitImportance = max(retrofitImportanceRaw, 0);
 
-%% Step 4: 0¨C1 Knapsack MILP (CPLEX)
+%% Step 4: 0-1 Knapsack MILP (CPLEX)
 f      = -retrofitImportance(:);        
 Aineq = [params.PowerRetrofitUnitCost(:).',params.GasRetrofitUnitCost(:).', params.WaterRetrofitUnitCost(:).'];                 
 bineq = params.Budget;
@@ -313,7 +318,7 @@ GZoneDeltaRes = arrayfun(@(id) GZoneResB(id,2)-GZoneResA(id,2),1:numel(TerminalZ
 WZoneDeltaRes = arrayfun(@(id) WZoneResB(id,2)-WZoneResA(id,2),1:numel(TerminalZone));
 PowerZoneResGain = [PZoneDeltaRes', PZoneResB(:,2), PZoneResA(:,2)];
 GasZoneResGain = [GZoneDeltaRes', GZoneResB(:,2), GZoneResA(:,2)];
-WaterZoneResGain = [WZoneDeltaRes', WZoneResB(:,2), WZoneResB(:,2)];
+WaterZoneResGain = [WZoneDeltaRes', WZoneResB(:,2), WZoneResA(:,2)];
 
 end
 
@@ -399,7 +404,7 @@ for i=1:numSim
                          GasZoneStateEvo, WaterZoneStateEvo] =HeuristicPowerDCPFGasMFWaterMF(PowerSystem, GasSystem, WaterSystem,PowerGasInterdependency, ...
                          PowerWaterInterdependency, PowerCISComDamgScenario, GasCISComDamgScenario, WaterCISComDamgScenario, TerminalZone, params);
                 case 'MF'
-                    [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, ~, ~, ~,PowerZosneStateEvo,...
+                    [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, ~, ~, ~,PowerZoneStateEvo,...
                          GasZoneStateEvo, WaterZoneStateEvo]= HeuristicPowerMFGasMFWaterMF(PowerSystem, GasSystem, WaterSystem,PowerGasInterdependency,...
                          PowerWaterInterdependency, PowerCISComDamgScenario, GasCISComDamgScenario, WaterCISComDamgScenario, TerminalZone, params);
             end

@@ -14,9 +14,6 @@ function relative_neighbors = identifyRelativeNeighbors(NodeData, center)
 %   If node_data is empty, the function returns empty.
 %   If node_data has fewer than three nodes, then for each center, the nearest node is returned.
 %
-%   Author: [Min Ouyang]
-%   Date: [2024-04-04]
-
 % If no nodes exist, return empty.
 
 OldNewIDs=[NodeData(:,1) (1:length(NodeData(:,1)))'];

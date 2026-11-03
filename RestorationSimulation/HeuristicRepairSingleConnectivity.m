@@ -3,7 +3,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = HeuristicRepairSingleC
 % Schedules repairs for a single infrastructure system using a heuristic
 % optimizer (Genetic Algorithm or Simulated Annealing). The goal is to
 % minimize resilience loss, with system functionality evaluated
-% by a connectivity-based metric {'Pop','SDC','LCS','NPC'}.
+% by a connectivity-based metric {'POP','SDC','LCS','NPC'}.
 %
 % INPUT:
 %   CIS                  : Struct of a single system with fields:
@@ -13,13 +13,14 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = HeuristicRepairSingleC
 %   CISComDamgScenario   : [Ndm x 4] matrix, each row = [ComponentType, ComponentID, RepairTime, SysType]
 %                          DamageType: 1=node, 2=edge
 %                          ComponentID: node index (if 1) or edge index (if 2)
-%                          RepairTime: duration to repair this component
+%                          RepairTime: repair duration in the user-defined time unit (days in the Shelby examples)
 %                          SysType: system type code (kept for consistency)
 %   TerminalZone : structure array defining spatial zone divisions. 
 %   params             : Struct with fields
+%                        .SystemType  'power' | 'gas' | 'water' | 'road'
 %                        .ScheMethod   'GA' or 'SA'
 %                        .RepairCrew   positive integer
-%                        .FunMetric    'Pop'|'SDC'|'LCS'|'NPC'
+%                        .FunMetric    'POP' | 'SDC' | 'LCS' | 'NPC'
 %                        GA options: .GANumInd .GAMaxgen .GASelectionRate
 %                                   .GACrossoverProb .GAMutationProb
 %                        SA options: .InitialTemp .TerminaTemp
@@ -27,13 +28,16 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = HeuristicRepairSingleC
 %
 % OUTPUT:
 %   ResLoss     : [1x3] vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
+%                 NormalizedResilienceLoss is dimensionless; RealResilience and ExpectedResilience
+%                 use the same time unit as RepairTime.
 %   SysFunsEvo  : [(Ndm+1) x 4] matrix:
 %                 [time, normalized functionality drop, post-disaster functionality, pre-disaster functionality]
 %                 (row 1 is the pre-repair state at time=0)
 %   RepairSeq   : [Ndm x 5] matrix:
 %                 [DamageType, ComponentID, SysType, FinishTime, TeamID]
-%   ZoneStateEvo   : Z¡ÁK numeric matrix of zone states at critical time points
-%                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%                 FinishTime uses the same time unit as RepairTime.
+%   ZoneStateEvo : [Z x (Ndm+2)] matrix: [ZoneID, initial service level,
+%                  service levels after each repair]
 
 %%  Step 1: Validate inputs
 validSystems = {'power','gas','water','road'};
@@ -43,9 +47,9 @@ end
 
 % Metric set (road typically has no SDC)
 if ismember(lower(params.SystemType), {'power','gas','water'})
-    allowedFunMetrics = {'Pop','SDC','LCS','NPC'};
+    allowedFunMetrics = {'POP','SDC','LCS','NPC'};
 else
-    allowedFunMetrics = {'Pop','LCS','NPC'};
+    allowedFunMetrics = {'POP','LCS','NPC'};
 end
 if ~isfield(params,'FunMetric') || ~ismember(params.FunMetric, allowedFunMetrics)
     error('Invalid params.FunMetric for system "%s". Allowed: %s', ...
@@ -111,7 +115,7 @@ end
 Ndm = size(CISComDamgScenario,1);
 if Ndm == 0
     switch params.FunMetric
-        case 'Pop', sysfunc = @SinglePopConnectivity;
+        case 'POP', sysfunc = @SinglePOPConnectivity;
         case 'SDC', sysfunc = @SingleSDConnectivity;
         case 'LCS', sysfunc = @SingleLCSConnectivity;
         case 'NPC', sysfunc = @SingleNPConnectivity;
@@ -120,7 +124,7 @@ if Ndm == 0
     SysFunsEvo = [0, baseSysFunLoss(1), baseSysFunLoss(2), baseSysFunLoss(3)];
     RepairSeq = [];
     ResLoss = [0, 0, 0];
-    ZoneStateEvo=[(1:size(TerminalZone,2))',baseZoneState(:,1)];
+    ZoneStateEvo=[(1:numel(TerminalZone))',baseZoneState(:,1)];
     fprintf('[Info] No damaged components detected. No repair scheduling is required.\n');
     return;
 end
@@ -141,10 +145,10 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = GABasedRepairSchedulin
 % components to minimize resilience loss under given crews.
 % 
 % INPUT:
-% CIS, CISComDamgScenario,TerminalZone£¬ params : Same as main function. GA fields used¡£
+% CIS, CISComDamgScenario, TerminalZone, params : Same as main function. GA fields used.
 %
 % OUTPUT:
-% ResLoss, SysFunsEvo, RepairSeq£¬ZoneStateEvo : Same definitions as main function.
+% ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo : Same definitions as main function.
 
 RR = params.RepairCrew;
 Ndm = size(CISComDamgScenario,1); % Number of damaged components
@@ -268,13 +272,14 @@ function [SysFunsEvo, ResLoss, ZoneStateEvo] = computeRestorationCurveSingleConn
 % OUTPUT:
 %    SysFunsEvo -  [time stamps, normalized functionality drop at each
 %                  time, post-disaster functionality at each time, pre-disaster functionality]
-%    ResLoss    -  [NormLoss, RealRes, ExpectedRes]
-%    ZoneStateEvo - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%    ResLoss    -  [NormLoss, RealRes, ExpectedRes]; NormLoss is dimensionless,
+%                  while RealRes and ExpectedRes use the same time unit as RepairTime
+%    ZoneStateEvo - [ZoneID, initial service level, service levels after each repair]
 
 
 % Select functionality function handle
 switch params.FunMetric
-    case 'Pop', sysfunc = @SinglePopConnectivity;
+    case 'POP', sysfunc = @SinglePOPConnectivity;
     case 'SDC', sysfunc = @SingleSDConnectivity;
     case 'LCS', sysfunc = @SingleLCSConnectivity;
     case 'NPC', sysfunc = @SingleNPConnectivity;
@@ -283,8 +288,8 @@ end
 Ndm = size(CISComDamgScenario,1);
 SysFunsEvo = zeros(Ndm+1,4);
 SysFunsEvo(2:end,1) = RepairSeq(:,4);
-ZoneStateEvo = nan(numel(TerminalZone), Ndm+1);
-ZoneStateEvo(:,1)=(1:size(TerminalZone,2))';
+ZoneStateEvo = nan(numel(TerminalZone), Ndm+2);
+ZoneStateEvo(:,1)=(1:numel(TerminalZone))';
 
 [SysFunLoss, ~, ZoneState] = sysfunc(CIS, CISComDamgScenario, params, TerminalZone);
 SysFunsEvo(1,2:4) = SysFunLoss;

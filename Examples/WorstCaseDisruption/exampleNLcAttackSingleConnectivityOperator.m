@@ -2,83 +2,67 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
 
-CIS_Type='power'; %% power | gas | water | road
-Model_Type='Pop'; %% SDC | LCS | NPC | Pop
-
-%% calculate the functionality loss for power system
-if strcmp(CIS_Type,'power')
-    load(strcat(CasePath,'\Power\PowerSystem.mat'),'PowerSystem');
-    CIS=PowerSystem;
-
-    while ~ismember(Model_Type, ["SDC","LCS","NPC","Pop"])
-        fprintf('Invalid input. Please set Model_Type as SDC, LCS, NPC, or Pop.\n');
-        break;
-    end
-end
-
-%% calculate the functionality loss for gas system
-if strcmp(CIS_Type,'gas')
-    load(strcat(CasePath,'\Gas\GasSystem.mat'),'GasSystem');
-    CIS=GasSystem;
-
-    while ~ismember(Model_Type, ["SDC","LCS","NPC","Pop"])
-        fprintf('Invalid input. Please set Model_Type as SDC, LCS, NPC, or Pop.\n');
-        break;
-    end
-end
-
-%% calculate the functionality loss for water system
-if strcmp(CIS_Type,'water')
-    load(strcat(CasePath,'\Water\WaterSystem.mat'),'WaterSystem');
-    CIS=WaterSystem;
-    while ~ismember(Model_Type, ["SDC","LCS","NPC","Pop"])
-        fprintf('Invalid input. Please set Model_Type as SDC, LCS, NPC, or Pop.\n');
-        break;
-    end
-end
-
-%% calculate the functionality loss for road system
-if strcmp(CIS_Type,'road')
-    load(strcat(CasePath,'\Road\RoadSystem.mat'),'RoadSystem');
-    CIS=RoadSystem;
-
-    while ~ismember(Model_Type, ["LCS","NPC","Pop"])
-        fprintf('Invalid input. Please set Model_Type as LCS, NPC, or Pop.\n');
-        break;
-    end
-end
+CIS_Type='power'; %% power | gas | water
+Model_Type='POP'; %% POP | LCS | SDC | NPC
 
 %% select the attack parameters
 AttackBudget = 5;
 NodeAttackCost = []; %       .NodeAttackCost     Nx1 node costs
 EdgeAttackCost = []; %       .EdgeAttackCost     Ex1 edge costs
-InvulNode = [];      %       .InvulNode          IDs of invulnerable nodes
-InvulEdge = [];          %       .InvulEdge          IDs of invulnerable edges
-InvalidStrategy = [];    %       .InvalidStrategy(k)  struct with .Node and .Edge lists
+InvulnerableCom = []; % Empty, or a structure with optional .Node and .Edge ID lists
+InvalidStrategy = []; % Exact excluded strategies with .Node and .Edge ID lists
+
+%% calculate the functionality loss for power system
+if strcmp(CIS_Type,'power')
+    load(fullfile(CasePath, 'Power', 'PowerSystem.mat'),'PowerSystem');
+    CIS=PowerSystem;
+    if ~ismember(Model_Type, ["POP","LCS","SDC","NPC"])
+        error('Invalid input. Choose from: POP, LCS, SDC, NPC.');
+    end
+end
+
+%% calculate the functionality loss for gas system
+if strcmp(CIS_Type,'gas')
+    load(fullfile(CasePath, 'Gas', 'GasSystem.mat'),'GasSystem');
+    CIS=GasSystem;
+    if ~ismember(Model_Type, ["POP","LCS","SDC","NPC"])
+        error('Invalid input. Choose from: POP, LCS, SDC, NPC.');
+    end
+end
+
+%% calculate the functionality loss for water system
+if strcmp(CIS_Type,'water')
+    load(fullfile(CasePath, 'Water', 'WaterSystem.mat'),'WaterSystem');
+    CIS=WaterSystem;
+    if ~ismember(Model_Type, ["POP","LCS","SDC","NPC"])
+        error('Invalid input. Choose from: POP, LCS, SDC, NPC.');
+    end
+end
 
 %% set attack parameters
+AttackParams = struct;
 AttackParams.Budget = AttackBudget;
-if isempty(NodeAttackCost)|| isempty(EdgeAttackCost)
-    numNodes=length(CIS.Node);
-    numEdges=length(CIS.Edge);
+numNodes=length(CIS.Node);
+numEdges=length(CIS.Edge);
+if isempty(NodeAttackCost)
     AttackParams.NodeAttackCost = ones(numNodes,1); %   Nx1 node costs
-    AttackParams.EdgeAttackCost = 10*ones(numEdges,1); %   Ex1 edge costs
-end
-if isempty(InvulNode)|| isempty(InvulEdge)
-    AttackParams.InvulNode = [];          %  IDs of invulnerable nodes
-    AttackParams.InvulEdge = [];          %  IDs of invulnerable edges
 else
-    AttackParams.InvulNode = InvulNode;   % IDs of invulnerable nodes
-    AttackParams.InvulEdge = InvulEdge;   % IDs of invulnerable edges
+    AttackParams.NodeAttackCost = NodeAttackCost;
 end
-if isempty(InvalidStrategy)
-    AttackParams.InvalidStrategy = [];    % .InvalidStrategy(k)  struct with .Node and .Edge lists
+if isempty(EdgeAttackCost)
+    AttackParams.EdgeAttackCost = ones(numEdges,1); %   Ex1 edge costs
+else
+    AttackParams.EdgeAttackCost = EdgeAttackCost;
 end
+AttackParams.InvulnerableCom = InvulnerableCom; % IDs of invulnerable components
+AttackParams.InvalidStrategy = InvalidStrategy; % struct with .Node and .Edge lists
 %% Set system parameters
 if ~isfield(CIS, 'NodeWeight')
     OperatorParams.NodeWeight = ones(numel(CIS.Node), 1);
@@ -86,14 +70,14 @@ end
 OperatorParams.SystemType = CIS_Type;
 %% Select attack model
 switch Model_Type
-    case 'Pop'
-        [AttackStrategy, SysFunLoss, ComState] = NLcAttackerRobPopConnectivityOperator(CIS, AttackParams, OperatorParams);
+    case 'POP'
+        [AttackStrategy, SysFunLoss, ComState] = NLcAttackerPOPConnectivityOperator(CIS, AttackParams, OperatorParams);
     case 'LCS'
-        [AttackStrategy, SysFunLoss, ComState] = NLcAttackerRobLCSConnectivityOperator(CIS, AttackParams, OperatorParams);
+        [AttackStrategy, SysFunLoss, ComState] = NLcAttackerLCSConnectivityOperator(CIS, AttackParams, OperatorParams);
     case 'SDC'
-        [AttackStrategy, SysFunLoss, ComState] = NLcAttackerRobSDConnectivityOperator(CIS, AttackParams, OperatorParams);  
+        [AttackStrategy, SysFunLoss, ComState] = NLcAttackerSDConnectivityOperator(CIS, AttackParams, OperatorParams);  
     case 'NPC'
-        [AttackStrategy, SysFunLoss, ComState] = NLcAttackerRobNPConnectivityOperator(CIS, AttackParams, OperatorParams);
+        [AttackStrategy, SysFunLoss, ComState] = NLcAttackerNPConnectivityOperator(CIS, AttackParams, OperatorParams);
 end
 %% Visualization
 if ~isempty(AttackStrategy.Node)
@@ -101,7 +85,7 @@ if ~isempty(AttackStrategy.Node)
     Region = arrayfun(@(id) struct('Shape','circle', ...
         'Center',[CIS.Node(id).Longitude, CIS.Node(id).Latitude], ...
         'Radius',1.5), AttackStrategy.Node);
-    mapCircledRegion(AreaBoundary, CIS, 'Topology', layoutOptions, Region);
+    mapCISRegionOverlay(AreaBoundary, CIS, 'Topology', layoutOptions, Region);
 end
 
 options.SystemType = CIS_Type;
@@ -122,8 +106,3 @@ if ~isempty(AttackStrategy.Edge)
 else
      disp('Attack Edge is Empty')
 end
-
-
-
-
-

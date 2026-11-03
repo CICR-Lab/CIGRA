@@ -9,7 +9,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleDCPF(
 %   induced by these exact repair times.
 %
 % INPUTS:
-%   CIS                 : struct with two arrays, CIS.Node (1¡ÁN) and CIS.Edge (1¡ÁE). If params.SystemType=='power':
+%   CIS                 : struct with two arrays, CIS.Node (1 x N) and CIS.Edge (1 x E). If params.SystemType=='power':
 %                         CIS.Node fields include:
 %                           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %                           Longitude, Latitude, ServedPopulation, Voltage,
@@ -18,7 +18,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleDCPF(
 %                           ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity,
 %                           Susceptance, Voltage, X, Y, ClassName, SeismicFragilityType
 %
-%   CISComDamgScenario  : [Ndm¡Á4] each row = [DamageType, ComponentID, RepairTime, SysType]
+%   CISComDamgScenario  : [Ndm x 4] each row = [DamageType, ComponentID, RepairTime, SysType]
 %                         DamageType: 1=node, 2=edge
 %                         ComponentID: node index (if 1) or edge index (if 2)
 %                         RepairTime: duration to repair this component
@@ -36,7 +36,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleDCPF(
 %                 (row 1 is the pre-repair state at time=0)
 %   RepairSeq   : [Ndm x 5] matrix:
 %                 [DamageType, ComponentID, SysType, FinishTime, TeamID]
-%   ZoneStateEvo   : Z¡ÁK numeric matrix of zone states at critical time points
+%   ZoneStateEvo   : Z x K numeric matrix of zone states at critical time points
 %                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
 %% Step 1: Input validation
 validSystems = {'power'};
@@ -62,7 +62,7 @@ Ndm = size(CISComDamgScenario,1);
 
 % Early return for empty damage scenario
 if Ndm == 0
-    [baseSysFunLoss, ~, baseZoneState] = SingleMF(CIS, CISComDamgScenario, params, TerminalZone);
+    [baseSysFunLoss, ~, baseZoneState] = SingleDCPF(CIS, CISComDamgScenario, params, TerminalZone);
     SysFunsEvo = [0, baseSysFunLoss];
     RepairSeq = [];
     ResLoss = [0, 0, 0];
@@ -97,7 +97,7 @@ ub((Ns+Nd+E)*(Tp-1)+Ndm*Tp+RR*Tp+Ndm*RR*Tp+Ndm*RR*Tp+(1:Ndm*RR*(Tp-1)+Ndm*RR*(Tp
 
 %% Step 4: Build MILP constraints
 % system operation constraints
-Aineq1 = zeros(E*2*(Tp-1),Nv); bineq1 = zeros(E*2*(Tp-1),1);
+Aineq1 = zeros(E*4*(Tp-1),Nv); bineq1 = zeros(E*4*(Tp-1),1);
 Aineq2 = zeros(Ndm*(Tp-1),Nv);bineq2 = zeros(Ndm*(Tp-1),1); inetag2 = 0;
 Aineq3 = zeros(Ndm*(Tp-1),Nv);bineq3 = zeros(Ndm*(Tp-1),1); inetag3 = 0;
 Aineq9 = zeros(E*4*(Tp-1),Nv);bineq9 = zeros(E*4*(Tp-1),1); % constraints for new variables z(l,t)
@@ -371,8 +371,9 @@ for t = 1:Tp-1
     ComDemand = arrayfun(@(i) CIS.Node(i).TargetDemand - Demnode(i), 1:N);
     ZoneStateEvo(:,t+1)= mapNodeStatesToZones(CIS, ComDemand', TerminalZone,'Flow');
 end
-SysFunsEvo(end,3) = TPD;
-ZoneStateEvo(:,end) = 1;
+[fullSysFun, ~, fullZoneState] = SingleDCPF(CIS, zeros(0,4), params, TerminalZone);
+SysFunsEvo(end,3:4) = fullSysFun(2:3);
+ZoneStateEvo(:,end) = fullZoneState(:,2);
 
 PostNorm = SysFunsEvo(:,3)./max(SysFunsEvo(:,4),eps);
 SysFunsEvo(:,2) = 1 - PostNorm;

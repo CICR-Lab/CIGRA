@@ -2,118 +2,118 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
 
-%% select the system Type and operator
-CIS_Type = 'power'; %% power | gas | water | road
-Model_Type = 'DCPF';  %'DCPF' | 'MF'
+%% select the system type and operator
+CIS_Type = 'power';   % power | gas | water
+Model_Type = 'MF';  % MF | DCPF
 
-%% load power system data
-if strcmp(CIS_Type,'power')
-    load(strcat(CasePath,'\Power\PowerSystem.mat'),'PowerSystem');
-    CIS = PowerSystem;
-
-    while ~ismember(CIS_Type, ['power','gas','water'])
-        fprintf('Invalid input. Please set Model_Type as power,gas,or water.\n');
-        break;
-    end
-end
-%% load gas system data
-if strcmp(CIS_Type,'gas')
-    load(strcat(CasePath,'\Gas\GasSystem.mat'),'GasSystem');
-    CIS = GasSystem;
-
-    while ~ismember(CIS_Type, ['power','gas','water'])
-        fprintf('Invalid input. Please set Model_Type as  power,gas,or water.\n');
-        break;
-    end
-end
-%% load water system data
-if strcmp(CIS_Type,'water')
-    load(strcat(CasePath,'\Water\WaterSystem.mat'),'WaterSystem');
-    CIS = WaterSystem;
-
-    while ~ismember(CIS_Type, ['power','gas','water'])
-        fprintf('Invalid input. Please set Model_Type as  power,gas,or water.\n');
-        break;
-    end
-end
 %% select the attack parameters
 AttackBudget = 3;
-NodeAttackCost = []; %       .NodeAttackCost     N¡Á1 node costs
-EdgeAttackCost = []; %       .EdgeAttackCost     E¡Á1 edge costs
-InvulNode = [];      %       .InvulNode          IDs of invulnerable nodes
-InvulEdge = [];          %       .InvulEdge          IDs of invulnerable edges
-InvalidStrategy = [];    %       .InvalidStrategy(k)  struct with .Node and .Edge lists
+NodeAttackCost = [];  % N-by-1 node costs
+EdgeAttackCost = [];  % E-by-1 edge costs
+InvulnerableCom = []; % Empty, or a structure with optional .Node and .Edge ID lists
+InvalidStrategy = []; % Exact excluded strategies with .Node and .Edge ID lists
+
+%% validate the system type
+if ~ismember(CIS_Type, ["power","gas","water"])
+    error('Invalid input. Choose CIS_Type from: power, gas, water.');
+end
+
+%% load power system
+if strcmp(CIS_Type,'power')
+    load(fullfile(CasePath, 'Power', 'PowerSystem.mat'),'PowerSystem');
+    CIS = PowerSystem;
+    if ~ismember(Model_Type, ["MF","DCPF"])
+        error('Invalid input. Choose from: MF, DCPF.');
+    end
+end
+
+%% load gas system
+if strcmp(CIS_Type,'gas')
+    load(fullfile(CasePath, 'Gas', 'GasSystem.mat'),'GasSystem');
+    CIS = GasSystem;
+    if ~strcmp(Model_Type, 'MF')
+        error('Invalid input. Choose from: MF.');
+    end
+end
+
+%% load water system
+if strcmp(CIS_Type,'water')
+    load(fullfile(CasePath, 'Water', 'WaterSystem.mat'),'WaterSystem');
+    CIS = WaterSystem;
+    if ~strcmp(Model_Type, 'MF')
+        error('Invalid input. Choose from: MF.');
+    end
+end
 
 %% set attack parameters
+AttackParams = struct;
 AttackParams.Budget = AttackBudget;
-if isempty(NodeAttackCost)|| isempty(EdgeAttackCost)
-    numNodes=length(CIS.Node);
-    numEdges=length(CIS.Edge);
-    AttackParams.NodeAttackCost = ones(numNodes,1); %       .NodeAttackCost     NÃ—1 node costs
-    AttackParams.EdgeAttackCost = ones(numEdges,1); %       .EdgeAttackCost     EÃ—1 edge costs
-end
-if isempty(InvulNode)|| isempty(InvulEdge)
-    AttackParams.InvulNode = [];          %       .InvulNode          IDs of invulnerable nodes
-    AttackParams.InvulEdge = [];          %       .InvulEdge          IDs of invulnerable edges
+numNodes = numel(CIS.Node);
+numEdges = numel(CIS.Edge);
+if isempty(NodeAttackCost)
+    AttackParams.NodeAttackCost = ones(numNodes,1);
 else
-    AttackParams.InvulNode = InvulNode;          %       .InvulNode          IDs of invulnerable nodes
-    AttackParams.InvulEdge = InvulEdge;          %       .InvulEdge          IDs of invulnerable edges
+    AttackParams.NodeAttackCost = NodeAttackCost;
 end
-if isempty(InvalidStrategy)
-    AttackParams.InvalidStrategy = [];    %       .InvalidStrategy(k)  struct with .Node and .Edge lists
+if isempty(EdgeAttackCost)
+    AttackParams.EdgeAttackCost = ones(numEdges,1);
+else
+    AttackParams.EdgeAttackCost = EdgeAttackCost;
 end
+AttackParams.InvulnerableCom = InvulnerableCom;
+AttackParams.InvalidStrategy = InvalidStrategy;
 
-%% Set system parameters
-if ~isfield(CIS, 'NodeWeight')
-    OperatorParams.NodeWeight = ones(numel(CIS.Node), 1);
+%% set system parameters
+OperatorParams = struct;
+if isfield(CIS, 'NodeWeight')
+    OperatorParams.NodeWeight = CIS.NodeWeight(:);
+else
+    OperatorParams.NodeWeight = ones(numNodes, 1);
 end
-OperatorParams.SystemType = lower(CIS_Type);
-%% Select attack model
+OperatorParams.SystemType = CIS_Type;
+
+%% select attack model
 switch Model_Type
     case 'MF'
-        [AttackStrategy, SysFunLoss,~] = NLcAttackerRobMFOperator(CIS, AttackParams, OperatorParams);
+        [AttackStrategy, SysFunLoss, ComState] = ...
+            NLcAttackerMFOperator(CIS, AttackParams, OperatorParams);
     case 'DCPF'
-        [AttackStrategy, SysFunLoss,~] = NLcAttackerRobDCPFOperator(CIS, AttackParams, OperatorParams);
+        [AttackStrategy, SysFunLoss, ComState] = ...
+            NLcAttackerDCPFOperator(CIS, AttackParams, OperatorParams);
 end
-%% Visualization
+
+%% visualization
 if ~isempty(AttackStrategy.Node)
-    layoutOptions= struct('SystemType', CIS_Type);
+    layoutOptions = struct('SystemType', CIS_Type);
     Region = arrayfun(@(id) struct('Shape','circle', ...
         'Center',[CIS.Node(id).Longitude, CIS.Node(id).Latitude], ...
         'Radius',1.5), AttackStrategy.Node);
-    mapCircledRegion(AreaBoundary, CIS, 'Topology', layoutOptions, Region);
+    mapCISRegionOverlay(AreaBoundary, CIS, 'Topology', layoutOptions, Region);
 end
 
-params.SystemType = CIS_Type;
-params.NodeWeight = OperatorParams.NodeWeight;
-CISComDamgScenario(1,:) = ones(numel(AttackStrategy.Node),1)';
-CISComDamgScenario(2,:) = [AttackStrategy.Node]';
-if strcmp(Model_Type,'DCPF')
-    [~, ComState] = SingleDCPF(CIS, CISComDamgScenario, params, TerminalZone);
-elseif  strcmp(Model_Type,'MF')
-     [~, ComState] = SingleMF(CIS, CISComDamgScenario, params, TerminalZone);
-end
-Options= struct('SystemType', CIS_Type,  'FlowSource','custom', ...
-               'EdgeFlow', ComState.Edge(:,2), ...
-               'NodeGen',  ComState.Node(:,3), ...
-               'NodeDem',  ComState.Node(:,2));
+Options = struct('SystemType', CIS_Type, 'FlowSource','custom', ...
+                 'EdgeFlow', ComState.Edge(:,2), ...
+                 'NodeGen', ComState.Node(:,3), ...
+                 'NodeDem', ComState.Node(:,2));
 mapSingleCISLayout(AreaBoundary, CIS, 'Flow', Options)
-%% Print results
+
+%% print results
 if ~isempty(AttackStrategy.Node)
     disp('Attack Nodes:')
     disp(AttackStrategy.Node);
 else
-     disp('Attack Node is Empty')
+    disp('Attack Node is Empty')
 end
 if ~isempty(AttackStrategy.Edge)
     disp('Attack Edges:')
     disp(AttackStrategy.Edge);
 else
-     disp('Attack Edge is Empty')
+    disp('Attack Edge is Empty')
 end

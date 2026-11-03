@@ -1,4 +1,16 @@
 function newchrom = selection_crossover_mutation(chrom,fitnv,Npg,selp,crossp,mutp)
+% Apply elitist selection, roulette-wheel selection, order-preserving
+% crossover, and swap mutation to permutation chromosomes.
+%
+% INPUT:
+%   chrom  - Nc x sum(Npg) matrix of permutation chromosomes
+%   fitnv  - Nc x 1 fitness vector; larger values indicate better solutions
+%   Npg    - [N1, N2], lengths of up to two permutation segments
+%   selp   - elite proportion
+%   crossp - crossover probability
+%   mutp   - mutation probability
+% OUTPUT:
+%   newchrom - updated chromosome matrix with the same size as chrom
 [Nc,~] = size(chrom);
 newchrom = chrom*0;
 fprob = cumsum(fitnv/sum(fitnv)); % RandStream.setDefaultStream(RandStream('mt19937ar','Seed',sum(1000*clock)));

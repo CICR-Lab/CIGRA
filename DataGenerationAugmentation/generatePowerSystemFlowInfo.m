@@ -1,77 +1,52 @@
 function PowerSystem = generatePowerSystemFlowInfo(PowerSystem, TerminalZone, params)
-% generatePowerSystemFlowInfo Augments an electric power system’s topology by
-% generating physical properties and component flow.
+% generatePowerSystemFlowInfo Adds demand, generation, line parameters, and
+% DC power-flow results to an electric power-system topology.
 %
 %   PowerSystem = generatePowerSystemFlowInfo(PowerSystem, TerminalZone, params)
 %
-%   Inputs:
-%       PowerSystem: Structure with fields:
-%           Node: Structure array with fields:
-%                .ID               - Unique node identifier
-%                .RealDemand       - Real (actual) demand (kW)
-%                .TargetDemand     - Target (required) demand (kW)
-%                .RealGeneration   - Actual generation (kW)
-%                .MaxGeneration    - Maximum generation (kW)
-%                .Longitude        - Longitude of the node’s location
-%                .Latitude         - Latitude of the node’s location
-%                .ServedPopulation - Number of people served at the node
-%                .Voltage          - Node voltage (kV)
-%                .ServiceZone      - A two-column array: [TerminalZoneID, RequiredDemand]
-%                .ClassName        - Class name (e.g., 'Substation', 'Generator', etc.)
-%                .SeismicFragilityType - Code to select seismic fragility parameters
+% Inputs:
+%   PowerSystem.Node fields:
+%       ID, Longitude, Latitude, Voltage.
+%       Optional fields include RealDemand, TargetDemand, RealGeneration,
+%       MaxGeneration, ServedPopulation, ServiceZone, ClassName, and
+%       SeismicFragilityType.
+%       RealDemand, TargetDemand, RealGeneration, and MaxGeneration are
+%       stored in MW. Demand values are nonnegative in PowerSystem.
 %
-%           Edge: Structure array with fields:
-%                .ID               - Unique edge identifier
-%                .FromNodeID       - ID of the “from” node
-%                .ToNodeID         - ID of the “to” node
-%                .Length           - Length (km)
-%                .RealFlow         - Real power flow (MW)
-%                .Capacity         - Capacity (MW)
-%                .Susceptance      - Susceptance (p.u or 1/ohm) (as used in dc power flow)
-%                .Voltage          - Voltage (kV)
-%                .X                - Vector of turning-point longitudes (NaN terminated)
-%                .Y                - Vector of turning-point latitudes (NaN terminated)
-%                .ClassName        - Class (e.g., 'Transmission', 'Distribution')
-%                .SeismicFragilityType - Code for selecting fragility parameters
+%   PowerSystem.Edge fields:
+%       ID, FromNodeID, ToNodeID, Length (km), Voltage (kV), X, and Y.
+%       The function generates RealFlow (MW), Capacity (MW), and
+%       Susceptance (1/ohm), and preserves ClassName and
+%       SeismicFragilityType when provided.
 %
-%       TerminalZone: Structure array that defines zone boundaries and population,
-%                     with fields:
-%                .X           - [Longitude coordinates along zone boundary, NaN terminated]
-%                .Y           - [Latitude coordinates along zone boundary, NaN terminated]
-%                .Type        - Land type of the zone
-%                .Population  - Population in the zone
+%   TerminalZone fields:
+%       X, Y, Population, and optionally clon and clat.
 %
-%       params: Structure with simulation parameters:
-%                params.demandFactor    - (kW per person; e.g., 0.001)
-%                params.generationMargin - Generation margin factor (e.g., 1.1)
-%                params.defaultvoltage  - Default voltage (kV) if missing (e.g., 110)
+%   params fields:
+%       demandFactor     - Demand in MW/person. Default: 0.001 MW/person,
+%                          equivalent to 1 kW/person.
+%       generationMargin - Maximum-generation margin. Default: 1.2.
+%       defaultvoltage   - Voltage (kV) used for an empty Voltage value.
 %
-%   Output:
-%       The function returns an updated PowerSystem structure, in which:
-%         - Each edge’s Capacity and Susceptance are updated based on its voltage,
-%         - Each node’s demand is augmented based on the TerminalZone served,
-%         - Generator nodes (identified by ClassName) are assigned generation values,
-%         - A dc power flow is computed to update flows and to adjust capacities.
+% Output:
+%   PowerSystem with demand, generation, line parameters, DC power flow,
+%   served population, service zones, and edge-zone intersections.
 %
-%   The voltage-capacity-reactance table (extended for lower voltage levels) is defined as:
-%
-%       Line Voltage (kV)  Capacity (MW)  Reactance (Ω/km)
-%         6.6              0.5           0.95
-%         11               2             0.85
-%         13.8             2.5           0.80
-%         22               5             0.70
-%         33               10            0.60
-%         69               35            0.45
-%         138              100           0.35
-%         230              225           0.25
-%         345              450           0.20
-%         500              800           0.15
-%         765              1500          0.12
-%
-%   Author: [Your Name]
-%   Date: [Date]
+% Voltage-capacity-reactance table:
+%   Line voltage (kV)   Capacity (MW)   Reactance (ohm/km)
+%        6.6                 0.5               0.95
+%       11                   2                 0.85
+%       13.8                 2.5               0.80
+%       22                   5                 0.70
+%       33                  10                 0.60
+%       69                  35                 0.45
+%      138                 100                 0.35
+%      230                 225                 0.25
+%      345                 450                 0.20
+%      500                 800                 0.15
+%      765                1500                 0.12
 
-%% Step 0.1: Define the voltage-capacity-reactance lookup table.
+%% Step 1.1: Define the voltage-capacity-reactance lookup table.
 voltTable = [6.6   0.5   0.95;
              11    2     0.85;
              13.8  2.5   0.80;
@@ -84,7 +59,7 @@ voltTable = [6.6   0.5   0.95;
              500   800   0.15;
              765   1500  0.12];
 
-%% Step 0.2: Check required basic fields in PowerSystem.
+%% Step 1.2: Check required basic fields in PowerSystem.
 % For Nodes: ID, Longitude, Latitude, Voltage
 nodeReqFields = {'ID','Longitude','Latitude','Voltage'};
 for i = 1:length(nodeReqFields)
@@ -133,7 +108,7 @@ for n = 1:length(PowerSystem.Node)
     if isempty(PowerSystem.Node(n).Voltage)
         PowerSystem.Node(n).Voltage = params.defaultvoltage;
     end
-    PowerSystem.Node(n).ServedPopulation=0;
+    PowerSystem.Node(n).ServedPopulation = 0;
 end
 for e = 1:length(PowerSystem.Edge)
     if isempty(PowerSystem.Edge(e).Voltage)
@@ -141,27 +116,27 @@ for e = 1:length(PowerSystem.Edge)
     end
 end
 
-%% Step 2: Update Each Edge’s Capacity and Susceptance Based on Voltage
+%% Step 2: Update Each Edge Capacity and Susceptance Based on Voltage
 for e = 1:length(PowerSystem.Edge)
     V_edge = PowerSystem.Edge(e).Voltage;
     % Find the row in voltTable whose voltage is closest to V_edge.
     [~, idx] = min(abs(voltTable(:,1) - V_edge));
     cap_val = voltTable(idx,2);  % Capacity in MW
-    react_val = voltTable(idx,3); % Reactance in Ω/km
+    react_val = voltTable(idx,3); % Reactance in ohm/km
     PowerSystem.Edge(e).Capacity = cap_val;
-    % The total reactance (ohm) along the line is react_val * Length. Then susceptance is 1/(reactance * Length).
+    % Total reactance is react_val * Length (ohm). Susceptance is its inverse.
     if PowerSystem.Edge(e).Length > 0
         PowerSystem.Edge(e).Susceptance = 1 / (react_val * PowerSystem.Edge(e).Length);
     else
-        PowerSystem.Edge(e).Susceptance = 0; % or warn if Length==0.
+        PowerSystem.Edge(e).Susceptance = 0;
     end
 end
 
 %% Step 3: Assign TerminalZone to Nearest Power System Nodes (for Demand Estimation)
 % For each TerminalZone, determine its centroid (if TerminalZone.clon/clat exist, use them; else compute as mean of boundary points).
-% Use demand factor: if missing, use default 0.001.
+% Use a default demand of 0.001 MW/person, equivalent to 1 kW/person.
 if ~isfield(params, 'demandFactor') || isempty(params.demandFactor)
-    params.demandFactor = 0.001;
+    params.demandFactor = 0.001; % MW/person (1 kW/person)
 end
 for z = 1:length(TerminalZone)
     if isfield(TerminalZone(z), 'clon') && ~isempty(TerminalZone(z).clon)
@@ -184,7 +159,7 @@ for z = 1:length(TerminalZone)
     end
     [~, minIdx] = min(dists);
     % Assign this zone to the nearest node.
-    % Estimate demand for the zone = Population * demandFactor.
+    % Estimate zone demand in MW.
     zoneDemand = TerminalZone(z).Population * params.demandFactor;
     % If the node already has a ServiceZone record, append; else, create a new one.
     if isempty(PowerSystem.Node(minIdx).ServiceZone)
@@ -192,7 +167,7 @@ for z = 1:length(TerminalZone)
     else
         PowerSystem.Node(minIdx).ServiceZone = [PowerSystem.Node(minIdx).ServiceZone; [z, zoneDemand]];
     end
-    % Add zone demand to node’s RealDemand and TargetDemand.
+    % Add zone demand to the node RealDemand and TargetDemand.
     PowerSystem.Node(minIdx).RealDemand = PowerSystem.Node(minIdx).RealDemand + zoneDemand;
     PowerSystem.Node(minIdx).TargetDemand = PowerSystem.Node(minIdx).TargetDemand + zoneDemand;
     PowerSystem.Node(minIdx).ServedPopulation=PowerSystem.Node(minIdx).ServedPopulation + TerminalZone(z).Population;
@@ -211,7 +186,7 @@ for n = 1:length(PowerSystem.Node)
     end
 end
 
-% Compute total demand (sum over all nodes).
+% Compute total system demand in MW.
 total_demand = sum([PowerSystem.Node.RealDemand]);
 numGenerators = sum(isGenerator);
 if numGenerators > 0
@@ -225,10 +200,10 @@ if numGenerators > 0
         if isGenerator(n)
             % For each generator node, get its voltage and look up the capacity.
             gid=gid+1;
-            nodeVoltage = PowerSystem.Node(n).Voltage;  % Voltage in kV.
+            nodeVoltage = PowerSystem.Node(n).Voltage;  % kV
             % Find the row in the table with the closest voltage.
             [~, idx] = min(abs(voltTable(:,1) - nodeVoltage));
-            gc_values(gid,:) = [n voltTable(idx, 2)];  % Capacity in MW.
+            gc_values(gid,:) = [n voltTable(idx, 2)];  % MW
         end
     end
     sum_gc = sum(gc_values(:,2));
@@ -246,10 +221,11 @@ end
 % Construct the bus and branch matrices.
 numNodes = length(PowerSystem.Node);
 numEdges = length(PowerSystem.Edge);
-% Build bus matrix: [ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration]
+% dc_pf uses positive generation and negative load injections.
+% Columns: [ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration]
 bus = [[PowerSystem.Node.ID]', ...
-       [PowerSystem.Node.RealDemand]' , ...
-       [PowerSystem.Node.TargetDemand]', ...
+       -[PowerSystem.Node.RealDemand]', ...
+       -[PowerSystem.Node.TargetDemand]', ...
        [PowerSystem.Node.RealGeneration]', ...
        [PowerSystem.Node.MaxGeneration]'];
    
@@ -263,12 +239,13 @@ branch = [[PowerSystem.Edge.FromNodeID]', ...
       
 sp.bus = bus;
 sp.branch = branch;
-% Run the DC power flow function (assumed implemented elsewhere).
+% Run the DC power-flow calculation.
 sp_new = dc_pf(sp);
 
-% Update nodes:
+% Convert the negative dc_pf load injection back to the nonnegative demand
+% convention used by PowerSystem.
 for n = 1:numNodes
-    PowerSystem.Node(n).RealDemand = sp_new.bus(n,2);
+    PowerSystem.Node(n).RealDemand = -sp_new.bus(n,2);
     PowerSystem.Node(n).RealGeneration = sp_new.bus(n,4);
 end
 
@@ -278,11 +255,15 @@ for e = 1:numEdges
     % Adjust capacity: if the absolute flow exceeds the current capacity,
     % scale capacity up to the next multiple.
     currentCap = sp_new.branch(e,6);
-    PowerSystem.Edge(e).Capacity = ceil(abs(sp_new.branch(e,5)) / currentCap) * currentCap;
+    if abs(sp_new.branch(e,5)) > currentCap
+        PowerSystem.Edge(e).Capacity = ceil(abs(sp_new.branch(e,5)) / currentCap) * currentCap;
+    else
+        PowerSystem.Edge(e).Capacity = currentCap;
+    end
 
 end
 
-% identify the zone set crossed by each edge 
+% Identify the zones crossed by each edge.
 for e=1:length(PowerSystem.Edge)
     EdgeStr.X=PowerSystem.Edge(e).X;
     EdgeStr.Y=PowerSystem.Edge(e).Y;

@@ -7,40 +7,43 @@ function [RetroID, SysResGain, ZoneResGain] = RuleRetrofitSingleCISSeismicResili
 %
 % INPUTS:
 %   CIS  : struct containing network topology and component attributes, with:
-%          CIS.Node (1¡ÁN) ¡ª node array
+%          CIS.Node (1-by-N) - node array
 %              Fields: ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %                      Longitude, Latitude, ServedPopulation, Voltage, ServiceZone,
 %                      ClassName, SeismicFragilityType
-%          CIS.Edge (1¡ÁE) ¡ª edge array
+%          CIS.Edge (1-by-E) - edge array
 %              Fields: ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity,
 %                      Susceptance, Voltage, X, Y, ClassName, SeismicFragilityType
 %
-%   SeismicMagnitudeEpicenter : Q¡Á5 matrix defining sampled seismic scenarios.
+%   SeismicMagnitudeEpicenter : Q-by-5 matrix defining sampled seismic scenarios.
 %          Columns: [1 Scenario_ID, 2 Magnitude, 3 Longitude, 4 Latitude, 5 Normalized_Probability]
 %
 %   TerminalZone : structure array defining spatial zone divisions (for site-based
 %          hazard computation). Each element includes:
-%          X, Y    ¡ª boundary coordinates (NaN-terminated)
-%          clon, clat ¡ª (optional) centroid longitude and latitude; if absent,
+%          X, Y    - boundary coordinates (NaN-terminated)
+%          clon, clat - (optional) centroid longitude and latitude; if absent,
 %                         computed as mean(X), mean(Y)
 % 
 %   params : struct with required fields:
 %       .SystemType         : 'power' | 'gas' | 'water'
-%       .FunMetric          : 'DCPF' | 'MF' | 'Pop' | 'SDC' | 'LCS' | 'NPC'
+%       .FunMetric          : 'DCPF' | 'MF' | 'POP' | 'SDC' | 'LCS' | 'NPC'
 %                             (DCPF only valid for power)
 %       .numSim             : positive integer, Monte Carlo samples
 %       .RepairCrew         : positive integer, passed to restoration solver
-%       .RetrofitRuleType   : 'degree' | 'betweenness' | 'proximity'
-%       .RetrofitUnitCost   : N¡Á1 numeric vector, per-node retrofit cost
+%       .RetrofitRuleType   : node selection rule for retrofit:
+%                             'degree' | 'betweenness' | 'proximity'
+%       .RepairRuleType     : component scheduling rule for post-event repair:
+%                             'degree' | 'betweenness' | 'proximity'
+%       .RetrofitUnitCost   : N-by-1 numeric vector, per-node retrofit cost
 %       .Budget             : non-negative scalar total budget
 % 
 % OUTPUTS:
 %   RetroID : column vector of IDs of selected components (nodes) to be retrofitted.
 %
-%   SysResGain : 1¡Á3 row vector [DeltaRes, ResLoss_Before, ResLoss_After]
+%   SysResGain : 1-by-3 row vector [DeltaRes, ResLoss_Before, ResLoss_After]
 %             where DeltaRes = ResLoss_Before - ResLoss_After.
 %             (Positive DeltaRes means retrofit improves resilience.)
-%  ZoneResGain: Z¡Á3 row vector [Res_Improvement, Zone ResLoss_Before, Zone ResLoss_After]
+%   ZoneResGain: Z-by-3 matrix [Res_Improvement, Zone ResLoss_Before, Zone ResLoss_After]
 
 %% Step 1: Validate inputs
 % Basic presence checks
@@ -48,7 +51,7 @@ if nargin < 4
     error('RuleRetrofitSingleCISSeismicResilience: not enough input args. Need CIS, SeismicMagnitudeEpicenter, TerminalZone, params.');
 end
 
-requiredParams = {'SystemType','FunMetric','numSim','RepairCrew','RetrofitRuleType'};
+requiredParams = {'SystemType','FunMetric','numSim','RepairCrew','RetrofitRuleType','RepairRuleType'};
 for k = 1:numel(requiredParams)
     if ~isfield(params, requiredParams{k})
         error('Missing params.%s', requiredParams{k});
@@ -63,29 +66,32 @@ validRuleType = {'degree','betweenness','proximity'};
 if ~isfield(params,'RetrofitRuleType') || ~ismember(params.RetrofitRuleType, validRuleType)
     error('Invalid params.RetrofitRuleType. Choose from: %s', strjoin(validRuleType, ', '));
 end
+if ~isfield(params,'RepairRuleType') || ~ismember(params.RepairRuleType, validRuleType)
+    error('Invalid params.RepairRuleType. Choose from: %s', strjoin(validRuleType, ', '));
+end
 
 % Repair crews
 if ~isfield(params,'RepairCrew') || ~isscalar(params.RepairCrew) || params.RepairCrew<=0 || floor(params.RepairCrew)~=params.RepairCrew
     error('params.RepairCrew must be a positive integer scalar.');
 end
 
-% SystemType¨CFunMetric compatibility
+% SystemType-FunMetric compatibility
 validSystemTypes = {'power','gas','water'};
 if ~ismember(params.SystemType, validSystemTypes)
     error('Invalid params.SystemType="%s". Allowed: power | gas | water', params.SystemType);
 end
 switch params.SystemType
     case 'power'
-        allowedBase = {'DCPF','MF','Pop','SDC','LCS','NPC'};
+        allowedBase = {'DCPF','MF','POP','SDC','LCS','NPC'};
     case {'gas','water'}
-        allowedBase = {'MF','Pop','SDC','LCS','NPC'};
+        allowedBase = {'MF','POP','SDC','LCS','NPC'};
 end
 if ~ismember(params.FunMetric, allowedBase)
     error('Invalid params.FunMetric="%s" for SystemType="%s". Allowed: %s', ...
         params.FunMetric, params.SystemType, strjoin(allowedBase, ', '));
 end
 
-% Retrofit budgect and unit cost
+% Retrofit budget and unit cost
 if ~isfield(params,'RetrofitUnitCost')
     error('Missing params.RetrofitUnitCost.');
 end
@@ -105,7 +111,6 @@ end
 
 %%  Step 2: Build graph and rank components per rule
 N = numel(CIS.Node);
-E = numel(CIS.Edge);
 
 % Edge list (undirected)
 edge_from = [CIS.Edge.FromNodeID];
@@ -119,8 +124,7 @@ switch params.RetrofitRuleType
         deg_nodes = degree(G);
         score = deg_nodes(:);
     case 'betweenness'
-        network = sparse([edge_from'; edge_to'],[edge_to';edge_from'],1,E,E);
-        node_bet = betweenness_centrality(network);
+        node_bet = centrality(G,'betweenness');
         score = node_bet(:);
         score(~isfinite(score)) = 0;     
     case 'proximity'
@@ -175,11 +179,11 @@ scenarioWeights = scenarioWeights / sum(scenarioWeights);
 Q = size(SeismicMagnitudeEpicenter,1);
 Nr = numel(RetroID);
 
-% Clone CIS and tag select nodes as retrofitted 
+% Clone CIS and tag selected nodes as retrofitted
 CISRetrofitted = CIS;
 for i = 1:Nr
-    if ~isempty(CISRetrofitted.Node(RetroID(Nr)).SeismicFragilityType)
-        CISRetrofitted.Node(RetroID(Nr)).SeismicFragilityType(end) = 'A';
+    if ~isempty(CISRetrofitted.Node(RetroID(i)).SeismicFragilityType)
+        CISRetrofitted.Node(RetroID(i)).SeismicFragilityType(end) = 'A';
     end
 end
 
@@ -269,15 +273,18 @@ function [SysRes,ZoneRes]=ComputeRuleBasedSingleSysResilienceLoss(CIS,ComDamgSce
 %   INPUTS:
 %     CIS              : system structure
 %     ComDamgScenario  : struct with NodeState/NodeRepairTime and optionally EdgeState/EdgeRepairTime
-%     params           : parameter struct with RepairStrategy, FunMetric, numSim, etc.
+%     TerminalZone     : structure array defining spatial zone divisions
+%     params           : parameter struct with FunMetric, numSim, RepairCrew,
+%                        and RepairRuleType
 %
-%   OUTPUT:
-%     SysRes : scalar expected resilience loss
+%   OUTPUTS:
+%     SysRes  : scalar expected normalized resilience loss
+%     ZoneRes : Z-by-2 matrix [ZoneID, expected normalized resilience loss]
 
 numSim = params.numSim;
 SysResLossAll = cell(numSim,1);
 ZoneStateEvoAll = cell(numSim,1);
-TimeAsxisAll    = cell(params.numSim,1);
+TimeAxisAll     = cell(numSim,1);
 sampleProb = ones(numSim,1) / numSim;   % equal weighting
 
 for i=1:numSim
@@ -301,7 +308,7 @@ for i=1:numSim
     end
     CISComDamgScenario = [NodeDamgScenario; EdgeDamgScenario];
     % ----- Dispatch to solver -----
-    params.RuleType = params.RetrofitRuleType;
+    params.RuleType = params.RepairRuleType;
     switch params.FunMetric
         case 'DCPF'
             [ResLoss,SysFunsEvo,~,ZoneStateEvo] = RuleRepairSingleDCPF(CIS, CISComDamgScenario,TerminalZone, params);

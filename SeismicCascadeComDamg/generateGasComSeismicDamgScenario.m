@@ -1,46 +1,31 @@
 function GasComDamgScenario = generateGasComSeismicDamgScenario(GasSystem, GasComFPs, numSim)
-% generateGasComDamgScenario   Generate damage scenarios for gas system components 
+% generateGasComSeismicDamgScenario   Generate damage scenarios for gas system components
 % under a given seismic scenario.
 %
-%   GasComDamgScenario = generateGasComDamgScenario(GasSystem, GasComFPs, numSim)
+%   GasComDamgScenario = generateGasComSeismicDamgScenario(GasSystem, GasComFPs, numSim)
 %
 %   INPUTS:
-%     GasSystem: structure with fields:
-%         NodeData = [NodeID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, ...
-%                     Longitude, Latitude, ServedPopulation, Pressure]
-%         EdgeData = [EdgeID, FromNodeID, ToNodeID, Length, RealFlow, MaxFlow, Diameter]
-%         EdgeStr  = structure array for each edge e, with fields:
-%                     .X = [longitude for each turning point, NaN terminated]
-%                     .Y = [latitude for each turning point, NaN terminated]
-%         NodeService = structure array with field:
-%                     .ZoneSet = [TerminalZoneID, RequiredDemand]
-%         NodeFragility = structure array with field:
-%                     .SeismicType   % Code used for fragility lookup
-%         EdgeFragility = structure array with field:
-%                     .SeismicType   % Code used for fragility lookup
-%         Additionally, each gas node must have its component type stored (e.g., in
-%         GasSystem.Node(n).ComType) and likewise for each edge (GasSystem.Edge(e).ComType).
+%     GasSystem: structure with Node and Edge structure arrays. Node.ClassName
+%         identifies the node restoration type, and Edge.Diameter is in mm.
 %
 %     GasComFPs: structure array (indexed by seismic scenario h) with fields:
 %         GasComFPs(h).Node(n).dProb = [slight, moderate, extensive, complete]
-%         GasComFPs(h).Edge(e).RepairRate = [zoneID, r_PGV, r_LiqPGD, r_LandPGD];
+%         GasComFPs(h).Edge(e).RepairRate =
+%             [zoneID, length_km, r_PGV, r_LiqPGD, r_LandPGD].
 %
 %     numSim: number of simulation runs to generate.
 %
 %   OUTPUT:
 %     GasComDamgScenario: structure array (indexed by scenario h) with:
-%         For nodes:
-%              GasComDamgScenario(h).Node(n).State   = [1 x numSim] vector (1 if damaged, 0 otherwise)
-%              GasComDamgScenario(h).Node(n).RepairTime= [1 x numSim] vector (repair time, or 0 if not damaged)
-%         For edges:
-%              GasComDamgScenario(h).Edge(e).State    = matrix of size [numZoneSegments x 2 x numSim],
-%                         with each row: [ZoneID, damage flag] for that segment for simulation run s.
-%              GasComDamgScenario(h).Edge(e).RepairTime = matrix of size [numZoneSegments x 2 x numSim],
-%                         with each row: [ZoneID, repair time] for that segment.
+%         .NodeState: N x numSim damage states (0 = none, 1-4 = slight to complete).
+%         .NodeRepairTime: N x numSim node repair times in days.
+%         .EdgeState: E x numSim binary pipeline damage states.
+%         .EdgeBreaks and .EdgeLeaks: E x numSim repair counts.
+%         .EdgeRepairTime: E x numSim pipeline repair times based on one worker.
 %
 %   PROCEDURE:
 %     1. Read the restoration parameters for gas components from the Excel file 
-%        'HazusGasComFragilityParams.xls', sheet 'RestorationParams' (rows 2:4):
+%        'GasComSeismicFragilityParams.xlsx', sheet 'RestorationParams':
 %            Columns:
 %               A: Component
 %               B: meanSlight, C: stdSlight
@@ -48,12 +33,11 @@ function GasComDamgScenario = generateGasComSeismicDamgScenario(GasSystem, GasCo
 %               F: meanExtensive, G: stdExtensive
 %               H: meanComplete, I: stdComplete
 %
-%     2. Verify that all required input fields exist.
+%     2. Verify the required fragility fields.
 %
 %     3. For each seismic scenario h and for each gas node n:
 %            - Retrieve the damage probability vector dProb = GasComFPs(h).Node(n).dProb.
-%            - Match the node's component type (GasSystem.Node(n).ComType) with the
-%              restoration parameters to obtain an index rid.
+%            - Match GasSystem.Node(n).ClassName with the restoration parameters.
 %            - For each simulation run s, generate a random number r and compare it
 %              to the cumulative damage probability intervals:
 %                   if r <= dProb(1): slight damage (sample repair time from normrnd(meanSlight, stdSlight))
@@ -61,30 +45,17 @@ function GasComDamgScenario = generateGasComSeismicDamgScenario(GasSystem, GasCo
 %                   if r <= dProb(1)+dProb(2)+dProb(3): extensive damage
 %                   if r <= sum(dProb(1:4)): complete damage
 %                   else: not damaged.
-%            - Store state (0 if not damaged, 1 if damaged) and repair time.
+%            - Store damage state 0-4 and repair time.
 %
 %     4. For each seismic scenario h and for each gas edge e:
-%            - Retrieve its damage probability matrix dProb = GasComFPs(h).Edge(e).dProb.
-%              (Each row corresponds to a zone segment; first column is ZoneID.)
-%            - Match the edge's component type (GasSystem.Edge(e).ComType) with restoration 
-%              parameters to obtain index rid.
-%            - For each zone segment (row k) and for each simulation run s, generate a random number r
-%              and compare with cumulative probabilities (columns 2:5):
-%                   if r <= dProb(k,2): slight damage,
-%                   if r <= dProb(k,2)+dProb(k,3): moderate damage,
-%                   if r <= dProb(k,2)+dProb(k,3)+dProb(k,4): extensive damage,
-%                   if r <= sum(dProb(k,2:5)): complete damage,
-%                   else: not damaged.
-%            - Store results along with the zoneID.
-%
-%   NOTE: This draft uses normrnd (from the Statistics Toolbox). Adjust field names,
-%         indices, and error checking as needed.
+%            - Retrieve the zone-specific repair rates and inside lengths.
+%            - Sample ground-shaking and ground-failure repair counts using Poisson distributions.
+%            - Classify repairs as breaks or leaks and calculate the repair time.
 %
 
 %% 1. Read Restoration Parameters from Excel File
 restFilename = 'GasComSeismicFragilityParams.xlsx';
 [~,~,rawRest] = xlsread(restFilename, 'RestorationParams');
-% Assume rows 2 through 4 contain the data.
 nRest = size(rawRest,1) - 1;
 for s = 1:nRest
     RestorationParams(s).Component   = rawRest{s+1, 1};  % Component name (Column A)
@@ -98,11 +69,11 @@ for s = 1:nRest
     RestorationParams(s).stdComplete   = rawRest{s+1, 9};  % Column I
 end
 
-largePipeResParams=[0.2 0.4];% >=20 in=508mm # Fixed Breaks/Day/Worker, # Fixed Leaks/Day /Worker
-smallPipeResParams=[0.5 1.0];% <20==508mm in# Fixed Breaks/Day/Worker, # Fixed Leaks/Day /Worker
+largePipeResParams=[0.2 0.4]; % Diameter >= 20 in (508 mm): fixed breaks/day/worker, fixed leaks/day/worker
+smallPipeResParams=[0.5 1.0]; % Diameter < 20 in (508 mm): fixed breaks/day/worker, fixed leaks/day/worker
 
 %% 2. Check Required Input Data
-% Check that GasComFPs contains node and edge damage probability information.
+% Check that GasComFPs contains node damage probabilities and edge repair rates.
 if ~isfield(GasComFPs(1).Node(1), 'dProb')
     error('Missing field dProb in GasComFPs.Node.');
 end
@@ -114,7 +85,7 @@ end
 numScenarios = length(GasComFPs);  % number of seismic intensity realizations
 numNodes = length(GasSystem.Node);
 for h = 1:numScenarios
-    % Preallocate node structure output for this scenario.
+    % Generate node damage results for this scenario.
     for n = 1:numNodes
         % Get the damage probability vector for node n.
         % Expected dProb: [slight, moderate, extensive, complete]
@@ -122,43 +93,48 @@ for h = 1:numScenarios
         % Get the restoration type index for this node by matching its component type.
         ComType = GasSystem.Node(n).ClassName;
 
-        k = find(contains(ComType,{RestorationParams.Component}), 1);
-        if ~isempty(k)
-            k=k(1);
-            RepairTime = [RestorationParams(k).meanSlight RestorationParams(k).stdSlight;RestorationParams(k).meanModerate RestorationParams(k).stdModerate;
-                RestorationParams(k).meanExtensive RestorationParams(k).stdExtensive; RestorationParams(k).meanComplete RestorationParams(k).stdComplete];  % 2 x 4 matrix
+        if ~isempty(ComType)
+            k = find(cellfun(@(s) contains(ComType, s), {RestorationParams.Component}), 1);
+        else
+            k=[];
+        end
 
-            % Cumulative probabilities:
-            p1 = dProb(1);
-            p2 = dProb(1) + dProb(2);
-            p3 = dProb(1) + dProb(2) + dProb(3);
-            p4 = sum(dProb(1:4));
+        if isempty(k)
+            error('No restoration parameters found for node %d with ClassName "%s".', n, ComType);
+        end
+        RepairTime = [RestorationParams(k).meanSlight RestorationParams(k).stdSlight;RestorationParams(k).meanModerate RestorationParams(k).stdModerate;
+            RestorationParams(k).meanExtensive RestorationParams(k).stdExtensive; RestorationParams(k).meanComplete RestorationParams(k).stdComplete];  % 4 x 2 matrix
+
+        % Cumulative probabilities:
+        p1 = dProb(1);
+        p2 = dProb(1) + dProb(2);
+        p3 = dProb(1) + dProb(2) + dProb(3);
+        p4 = sum(dProb(1:4));
 
 
-            % For each simulation run, determine damage state and repair time.
-            for s = 1:numSim
-                r = rand;
+        % For each simulation run, determine damage state and repair time.
+        for s = 1:numSim
+            r = rand;
 
-                if r <= p1
-                    damageState = 1;
-                    rtime = normrnd(RepairTime(1,1), RepairTime(1,2));
-                elseif r <= p2
-                    damageState = 2;
-                    rtime = normrnd(RepairTime(2,1), RepairTime(2,2));
-                elseif r <= p3
-                    damageState = 3;
-                    rtime = normrnd(RepairTime(3,1), RepairTime(3,2));
-                elseif r <= p4
-                    damageState = 4;
-                    rtime = normrnd(RepairTime(4,1), RepairTime(4,2));
-                else
-                    damageState = 0;
-                    rtime = 0;
-                end
-
-                GasComDamgScenario(h).NodeState(n,s)=damageState;
-                GasComDamgScenario(h).NodeRepairTime(n,s)=rtime;
+            if r <= p1
+                damageState = 1;
+                rtime = max(0, normrnd(RepairTime(1,1), RepairTime(1,2)));
+            elseif r <= p2
+                damageState = 2;
+                rtime = max(0, normrnd(RepairTime(2,1), RepairTime(2,2)));
+            elseif r <= p3
+                damageState = 3;
+                rtime = max(0, normrnd(RepairTime(3,1), RepairTime(3,2)));
+            elseif r <= p4
+                damageState = 4;
+                rtime = max(0, normrnd(RepairTime(4,1), RepairTime(4,2)));
+            else
+                damageState = 0;
+                rtime = 0;
             end
+
+            GasComDamgScenario(h).NodeState(n,s)=damageState;
+            GasComDamgScenario(h).NodeRepairTime(n,s)=rtime;
         end
     end
 end
@@ -168,11 +144,9 @@ end
 numEdges = length(GasSystem.Edge);
 for h = 1:numScenarios
     for e = 1:numEdges
-        % dProb for edge e is assumed to be a matrix with rows for each zone segment:
-        % Each row: [ZoneID, slight, moderate, extensive, complete]
+        % Each row is [ZoneID, length_km, r_PGV, r_LiqPGD, r_LandPGD].
         EdgeRepairRate = GasComFPs(h).Edge(e).RepairRate;
         numZones = size(EdgeRepairRate, 1);
-        % Get restoration parameter index for edge by matching its component type.
         
         if GasSystem.Edge(e).Diameter>=508
             breakRepairDay=1/largePipeResParams(1);
@@ -187,8 +161,7 @@ for h = 1:numScenarios
             numLeaks=0;
 
             for k = 1:numZones
-                % Columns 2 to 5 give the damage probabilities for slight, moderate,
-                % extensive and complete damage, respectively.
+                % Read the inside length and repair rates for this zone segment.
                 insideEdgeLength=EdgeRepairRate(k,2);
                 r_PGV=EdgeRepairRate(k,3);
                 r_LiqPGD=EdgeRepairRate(k,4);

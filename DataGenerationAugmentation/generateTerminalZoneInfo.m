@@ -1,12 +1,13 @@
 function TerminalZone = generateTerminalZoneInfo(AreaBoundary, ZoneEastWestSize, ZoneNorthSouthSize,GlobalPopFile)
 % GenerateTerminalZoneInfo Divides an AreaBoundary into terminal zones and assigns population.
 %
-%   TerminalZone = GenerateTerminalZoneInfo(AreaBoundary, ZoneEastWestSize, ZoneNorthSouthSize)
+%   TerminalZone = generateTerminalZoneInfo(AreaBoundary, ZoneEastWestSize, ...
+%       ZoneNorthSouthSize, GlobalPopFile)
 %   divides the area defined by AreaBoundary (a structure with fields:
 %       AreaBoundary.X - [longitudes with NaN as separators]
 %       AreaBoundary.Y - [latitudes with NaN as separators]
 %   ) into a grid of zones. Each zone is assumed to be a rectangle with an
-%   east–west size of ZoneEastWestSize km and a north–south size of ZoneNorthSouthSize km.
+%   east-west size of ZoneEastWestSize km and a north-south size of ZoneNorthSouthSize km.
 %
 %   The function computes for each zone:
 %       TerminalZone(k).X - [longitude coordinates of zone boundary with NaN at the end]
@@ -14,30 +15,31 @@ function TerminalZone = generateTerminalZoneInfo(AreaBoundary, ZoneEastWestSize,
 %       TerminalZone(k).Type - (land use type, here left empty as a placeholder)
 %       TerminalZone(k).Population - population assigned to the zone.
 %
-%   Population is estimated using a global population raster (e.g., GHS_POP data).
-%   (The raster file path is hard-coded in this example; modify as needed.)
+%   GlobalPopFile specifies a single-band population raster in geographic
+%   longitude-latitude coordinates, using the same coordinate system as
+%   AreaBoundary. Raster rows must run from north to south, columns from west
+%   to east, and each cell value must represent a population count per cell.
 %
-%   Example:
-%       % Suppose AreaBoundary is already defined with fields X and Y.
-%       ZoneEW = 1;  % zone width: 1 km east-west
-%       ZoneNS = 1;  % zone height: 1 km north-south
-%       TZ = GenerateTerminalZoneInfo(AreaBoundary, ZoneEW, ZoneNS);
-%
-%   Note: This function uses readgeoraster and intrinsicToGeographic, available in recent MATLAB releases.
-%
-%   Author: [Min Ouyang]
-%   Date: [2024-03-28]
+
+    narginchk(4, 4);
+    validateattributes(ZoneEastWestSize, {'numeric'}, ...
+        {'scalar', 'real', 'finite', 'positive'}, mfilename, 'ZoneEastWestSize', 2);
+    validateattributes(ZoneNorthSouthSize, {'numeric'}, ...
+        {'scalar', 'real', 'finite', 'positive'}, mfilename, 'ZoneNorthSouthSize', 3);
+    if ~isfile(GlobalPopFile)
+        error('Population raster not found: %s', char(GlobalPopFile));
+    end
 
     %% Define conversion factors and compute degree intervals
     kmPerDegreeLat = 111;  % approximate km per degree of latitude
-    % Use the mean latitude of the AreaBoundary for conversion
+    % Use the mean boundary latitude for conversion
     clat = mean(AreaBoundary.Y(~isnan(AreaBoundary.Y)));
     % Compute degree interval for the north-south zone size
     deltaLat = ZoneNorthSouthSize / kmPerDegreeLat;
     % Compute degree interval for the east-west zone size (longitude changes with latitude)
     deltaLon = ZoneEastWestSize / (kmPerDegreeLat * cosd(clat));
 
-    %% Compute the centroid and extents of the AreaBoundary
+    %% Compute the mean boundary longitude and geographic extents
     clog = mean(AreaBoundary.X(~isnan(AreaBoundary.X)));
     
     min_log = min(AreaBoundary.X(~isnan(AreaBoundary.X)));
@@ -45,7 +47,7 @@ function TerminalZone = generateTerminalZoneInfo(AreaBoundary, ZoneEastWestSize,
     min_lat = min(AreaBoundary.Y(~isnan(AreaBoundary.Y)));
     max_lat = max(AreaBoundary.Y(~isnan(AreaBoundary.Y)));
     
-    % Calculate the number of zones needed in each direction from the centroid
+    % Calculate the number of zones needed in each direction from the mean boundary coordinates
     nsize_x = ceil(abs(min_log - clog)/deltaLon) + ceil(abs(max_log - clog)/deltaLon);
     nsize_y = ceil(abs(min_lat - clat)/deltaLat) + ceil(abs(max_lat - clat)/deltaLat);
     
@@ -73,8 +75,7 @@ function TerminalZone = generateTerminalZoneInfo(AreaBoundary, ZoneEastWestSize,
     % Trim the unused preallocated rows
     raster_data = raster_data(1:rid, :);
     
-    %% Estimate population for each zone using a global population raster
-    % (Modify the following file path as necessary for your population raster.)
+    %% Estimate population for each zone using the specified population raster
     popFile = fullfile(GlobalPopFile);
     try
         [pop_Data, pop_R] = readgeoraster(popFile);
@@ -106,16 +107,18 @@ function TerminalZone = generateTerminalZoneInfo(AreaBoundary, ZoneEastWestSize,
             for dLon = -ceil(deltaLon / pop_lon_step) : ceil(deltaLon / pop_lon_step)
                 lat_id = yid + dLat;
                 lon_id = xid + dLon;
-                % Convert the intrinsic raster indices to geographic coordinates
-                [sample_lat, sample_lon] = intrinsicToGeographic(pop_R, lon_id, lat_id);
-                % Subdivide the raster cell into finer samples
-                for i = 1:sample_step
-                    temp_lat = sample_lat - pop_lat_step/2 - pop_lat_step/(2*sample_step) + i*(pop_lat_step/sample_step);
-                    for j = 1:sample_step
-                        temp_lon = sample_lon - pop_lon_step/2 - pop_lon_step/(2*sample_step) + j*(pop_lon_step/sample_step);
-                        pk = pk + 1;
-                        % Assume the population value is uniformly distributed in the raster cell
-                        sample_pop(pk, :) = [temp_lat, temp_lon, pop_Data(lat_id, lon_id) / (sample_step^2)];
+                if lat_id>0 && lon_id>0 && lat_id<=size(pop_Data,1) && lon_id<=size(pop_Data,2) 
+                    % Convert the intrinsic raster indices to geographic coordinates
+                    [sample_lat, sample_lon] = intrinsicToGeographic(pop_R, lon_id, lat_id);
+                    % Subdivide the raster cell into finer samples
+                    for i = 1:sample_step
+                        temp_lat = sample_lat - pop_lat_step/2 - pop_lat_step/(2*sample_step) + i*(pop_lat_step/sample_step);
+                        for j = 1:sample_step
+                            temp_lon = sample_lon - pop_lon_step/2 - pop_lon_step/(2*sample_step) + j*(pop_lon_step/sample_step);
+                            pk = pk + 1;
+                            % Assume the population value is uniformly distributed in the raster cell
+                            sample_pop(pk, :) = [temp_lat, temp_lon, pop_Data(lat_id, lon_id) / (sample_step^2)];
+                        end
                     end
                 end
             end

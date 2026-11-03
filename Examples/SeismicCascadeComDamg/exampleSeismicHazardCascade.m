@@ -2,26 +2,25 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath=strcat(fileparts(pwd),'\Shelby\');
+CasePath = fullfile(ExamplesDir, 'Shelby');
 
 %% generate seismic scenarios including ground motions and ground failures due to landslide and liquefaction across the urban space
-    
-GlobalLandslideSusceptibilityMap=strcat(CIGRA_root,'\global_landslide\global-landslide-susceptibility-map-2-27-23.tif');
-GlobalLiquefactionMap=strcat(CIGRA_root,'\global_liquefaction\liquefaction_v1_deg_wgs84.tif');
-GlobalWtdMap=strcat(CIGRA_root,'\global_wtd\globgm-wtd-ss.tif');
-
+GlobalLandslideSusceptibilityMap=fullfile(CIGRA_root, 'ExternalData', 'global_landslide', 'global-landslide-susceptibility-map-2-27-23.tif');
+GlobalLiquefactionMap=fullfile(CIGRA_root, 'ExternalData', 'global_liquefaction', 'liquefaction_v1_deg_wgs84.tif');
+GlobalWtdMap=fullfile(CIGRA_root, 'ExternalData', 'global_wtd', 'globgm-wtd-ss.tif');
 
 %% integrate those liquefaction, landslide related information into terminal zones
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
+load(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
 TerminalZone = integrateLandslideLiquefactionWtdInfo(TerminalZone, GlobalLandslideSusceptibilityMap, GlobalLiquefactionMap, GlobalWtdMap);
-save(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
+save(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
 
-load(strcat(CasePath,'\SeismicScenario\ShelbySeismicMagEpiProb.mat'),'SeismicMagEpiProb');
+load(fullfile(CasePath, 'SeismicScenario', 'ShelbySeismicMagEpiProb.mat'),'SeismicMagEpiProb');
 SeismicScenario= generateSeismicCascadeScenarioGivenMagEpi(TerminalZone, SeismicMagEpiProb(1,2), SeismicMagEpiProb(1,3:4));
-
-save(strcat(CasePath,'SeismicScenario\SeismicScenarioGivenMaEpID1.mat'), 'SeismicScenario');
+save(fullfile(CasePath, 'SeismicScenario', 'SeismicScenarioGivenMaEpID1.mat'), 'SeismicScenario');
 
 %% display seismic scenario
 opts1 = struct('ValueLabel', 'PGA(g)');
@@ -37,5 +36,5 @@ mapTerminalZoneValue(TerminalZone, [SeismicScenario.VerticalSettlementPGD]', opt
 title('VerticalSettlementPGD')
 
 opts4 = struct('ValueLabel', 'LandSlidePGD(inch)');
-mapTerminalZoneValue(TerminalZone, [SeismicScenario.PGA]', opts4);
+mapTerminalZoneValue(TerminalZone, [SeismicScenario.LandSlidePGD]', opts4);
 title('LandSlidePGD')

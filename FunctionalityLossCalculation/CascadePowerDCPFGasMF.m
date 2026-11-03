@@ -11,20 +11,20 @@ function [PowerSysFunLoss, GasSysFunLoss, PowerComState, GasComState, PowerZoneS
 %
 % INPUTS:
 %   PowerSystem, GasSystem:
-%       struct with two fields, CIS.Node (1℅N) and CIS.Edge (1℅E).
+%       struct with two fields, CIS.Node (1 x N) and CIS.Edge (1 x E).
 %       PowerSystem
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Voltage, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
+%             - Voltage, ServiceZone, ClassName, SeismicFragilityType  
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage, 
-%             每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType  
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage, 
+%             - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType  
 %       GasSystem:
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Pressure, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
+%             - Pressure, ServiceZone, ClassName, SeismicFragilityType  
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType  
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType  
 %
 %   PowerGasInterdependency:
 %       A structure with fields:
@@ -32,14 +32,13 @@ function [PowerSysFunLoss, GasSysFunLoss, PowerComState, GasComState, PowerZoneS
 %           .GasToPower: [GasNodeID, PowerNodeID, ConversionRatio, RealGasFlow, MaxGasFlow]
 %
 %   PowerComDamgScenario, GasComDamgScenario:
-%        K℅2 matrix of damaged components:
+%        K x 2 matrix of damaged components:
 %        [DamageType (1=node, 2=edge), DamageComponentID]
 %
 %   TerminalZone : structure array defining spatial zone divisions.
 %
 %   params:
 %       A structure containing:
-%           - params.FunMetric: Functionality metric ('TotalDemand')
 %           - params.PowerNodeWeight: Vector (if not provided, defaults to ones)
 %           - params.GasNodeWeight: Vector (if not provided, defaults to ones)
 %
@@ -57,16 +56,16 @@ function [PowerSysFunLoss, GasSysFunLoss, PowerComState, GasComState, PowerZoneS
 %     - PowerComState.Edge(:,2): The real flow of the edge after the disaster.
 %
 %   PowerZoneState, GasZoneState:
-%       G℅2 matrix of zone-level functionality states, where G is the maximum zone ID:
+%       G x 2 matrix [Zone ID, service state], where G is numel(TerminalZone):
 %
 %   CascadeTrace:
 %       Structure array recording the *entire* cascade evolution process.
-%       Each element CascadeTrace(r) corresponds to one cascade iteration (r = 1＃R).
+%       Each element CascadeTrace(r) corresponds to one cascade iteration (r = 1:R).
 %       Fields include:
 %         - PowerSysFunLoss, GasSysFunLoss : System-level functionality losses at iteration r
 %         - PowerDemNode,  PowerGenNode    : Per-node demand and generation in power system
 %         - GasDemNode,    GasGenNode      : Per-node demand and generation in gas system
-%         - PowerEdgeState, GasEdgeState   : Per-edge flow magnitudes
+%         - PowerEdgeState, GasEdgeState   : Per-edge signed flows
 %         - PowerToGas, GasToPower         : Binary vectors (1=active, 0=failed) showing interdependency link states
 %         - PowerZoneState,GasZoneState      : Zone-level service state.
 
@@ -77,8 +76,9 @@ end
 if ~isfield(params, 'GasNodeWeight')
     params.GasNodeWeight = ones(size(GasSystem.Node,2), 1);
 end
+flowTolerance = 1e-6;
 
-%% Step 2: Compute initial functionality for each system using the max flow model
+%% Step 2: Compute initial functionality using DCPF for power and max flow for gas
 PowerParams = struct('SystemType', 'power', 'NodeWeight', params.PowerNodeWeight);
 GasParams   = struct('SystemType', 'gas',   'NodeWeight', params.GasNodeWeight);
 
@@ -114,7 +114,7 @@ while (powerCascadeFlag || gasCascadeFlag )
             gasNodeID = uniqueGasNodeIDs(i);
             powerToGasData = PowerGasInterdependency.PowerToGas(PowerGasInterdependency.PowerToGas(:, 2) == gasNodeID, :);
             % If the real demand at the power node is less than target flow, then gas node gets affected.
-            if all(PowerComState.Node(powerToGasData(:, 1), 2) < powerToGasData(:, 3))
+            if all(PowerComState.Node(powerToGasData(:, 1), 2) < powerToGasData(:, 3) - flowTolerance .* max(1, abs(powerToGasData(:, 3))))
                 if ~ismember(gasNodeID, affectedGasNodes)
                     gasCascadeFlag = true;
                     affectedGasNodes = unique([affectedGasNodes; gasNodeID]);
@@ -134,7 +134,7 @@ while (powerCascadeFlag || gasCascadeFlag )
         for i = 1:length(uniquePowerNodeIDs)
             powerNodeID = uniquePowerNodeIDs(i);
             gasToPowerData = PowerGasInterdependency.GasToPower(PowerGasInterdependency.GasToPower(:, 2) == powerNodeID, :);
-            if all(GasComState.Node(gasToPowerData(:, 1), 2) < gasToPowerData(:, 4))
+            if all(GasComState.Node(gasToPowerData(:, 1), 2) < gasToPowerData(:, 4) - flowTolerance .* max(1, abs(gasToPowerData(:, 4))))
                 if ~ismember(powerNodeID, affectedPowerNodes)
                     powerCascadeFlag = true;
                     affectedPowerNodes = unique([affectedPowerNodes; powerNodeID]);

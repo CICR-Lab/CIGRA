@@ -1,18 +1,18 @@
 function [PowerSysRes, GasSysRes, PowerZoneRes, GasZoneRes] = EvaluatePowerGasWorstCaseRes(PowerSystem,GasSystem,PowerGasInterdependency,...
     AttackParams,OperatorParams,TerminalZone,ResEvaParams,PowerResilienceGoal,GasResilienceGoal)
 % INTRODUCTION
-%   Quantifies the resilience of interdependent power每gas systems under a single
-%   worst-case disruption. The function identifies the attacker＊s worst-case target,
+%   Quantifies the resilience of interdependent power-gas systems under a single
+%   worst-case disruption. The function identifies the attacker's worst-case target,
 %   simulates coupled system restoration using rule-based or heuristic repair
 %   strategies, and evaluates time-dependent functionality of both systems through
 %   one of three metrics:
-%        'ResLoss'   每 normalized area under (1 - F(t))
-%        'CritTime'  每 weighted functionality at specified time points
-%        'UserGoal'  每 population-weighted goal satisfaction rate
+%        'ResLoss'   - normalized area under (1 - F(t))
+%        'CritTime'  - weighted functionality at specified time points
+%        'UserGoal'  - population-weighted goal satisfaction rate
 %
 % INPUTS
 %   PowerSystem, GasSystem:
-%       Each is a struct with fields .Node (1℅N) and .Edge (1℅E).
+%       Each is a struct with fields .Node (1xN) and .Edge (1xE).
 %       - PowerSystem.Node fields include:
 %           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %           Longitude, Latitude, ServedPopulation, Voltage, ServiceZone,
@@ -36,10 +36,11 @@ function [PowerSysRes, GasSysRes, PowerZoneRes, GasZoneRes] = EvaluatePowerGasWo
 %   AttackParams :
 %       Struct defining the attacker model:
 %         .AttackType : 'LC' | 'NLC'
-%         .Radius     : positive scalar, REQUIRED when AttackType = 'LC'
+%         .Radius     : positive scalar, REQUIRED when AttackType = 'LC'
+%         .InvulnerableCom : empty, or Power/Gas local Node/Edge fields
 %         .Budget      : positive scalar (REQUIRED when AttackType='NLC')
-%         .PowerNodeAttackCost, GasNodeAttackCost: N*1 vector specifying the cost to attack each node.(REQUIRED when AttackType='NLC')
-%         .PowerEdgeAttackCost, GasEdgeAttackCost: E*1 vector specifying the cost to attack each edge.(REQUIRED when AttackType='NLC')
+%         .PowerNodeAttackCost, GasNodeAttackCost: optional N*1 vectors specifying node attack costs; default is all ones
+%         .PowerEdgeAttackCost, GasEdgeAttackCost: optional E*1 vectors specifying edge attack costs; default is all ones
 %   OperatorParams :
 %       Struct defining operator modeling choices:
 %         .PowerFunMetric : 'DCPF' | 'MF'   % REQUIRED
@@ -50,18 +51,18 @@ function [PowerSysRes, GasSysRes, PowerZoneRes, GasZoneRes] = EvaluatePowerGasWo
 %
 %   ResEvaParams :
 %       Struct configuring resilience evaluation and restoration simulation:
-%         ? Common:
+%         - Common:
 %             .ResMetric      : 'ResLoss' | 'CritTime' | 'UserGoal'
 %             .RepairStrategy : 'Rule' | 'Heuristic'
 %             .RepairCrew     : [P G] positive integers for power/gas repair teams
-%         ? If .RepairStrategy = 'Rule':
+%         - If .RepairStrategy = 'Rule':
 %             .PowerRuleType  : 'degree' | 'betweenness' | 'proximity'
 %             .GasRuleType    : 'degree' | 'betweenness' | 'proximity'
-%         ? If .RepairStrategy = 'Heuristic':
+%         - If .RepairStrategy = 'Heuristic':
 %             .ScheMethod     : 'SA' | 'GA'
-%         ? If .ResMetric = 'CritTime':
-%             .CritTimes      : 1℅K vector of time checkpoints (default [0 3 7 30 90])
-%             .CritWeights    : 1℅K vector (normalized to sum=1 if not already)
+%         - If .ResMetric = 'CritTime':
+%             .CritTimes      : 1xK vector of time checkpoints (default [0 3 7 30 90])
+%             .CritWeights    : 1xK vector (normalized to sum=1 if not already)
 %
 %   PowerResilienceGoal, GasResilienceGoal:
 %                      (Only when ResMetric = 'UserGoal') numeric vector of length Z (>=0),
@@ -69,20 +70,20 @@ function [PowerSysRes, GasSysRes, PowerZoneRes, GasZoneRes] = EvaluatePowerGasWo
 %
 % OUTPUTS
 %   PowerSysRes, GasSysRes:
-%                      scalar for 'ResLoss', 'CritTime', and 'UserGoal' 〞 the mean across simulations.
-%                      (For 'ResLoss': mean normalized loss; for 'CritTime': mean weighted functionality;
-%                       for 'UserGoal': mean population-weighted goal satisfaction.)
+%                      scalar result for the selected worst-case disruption.
+%                      (For 'ResLoss': normalized loss; for 'CritTime': weighted functionality;
+%                       for 'UserGoal': population-weighted goal satisfaction.)
 %
 %   PowerZoneRes , GasZoneRes :
-%                      Zx2 numeric matrix: [ZoneID, value], where value is the per-zone mean across simulations.
-%                      For 'ResLoss' : mean normalized loss per zone.
-%                      For 'CritTime': mean weighted functionality per zone.
-%                      For 'UserGoal': mean goal satisfaction per zone.
+%                      Zx2 numeric matrix: [ZoneID, value] for the selected disruption.
+%                      For 'ResLoss' : normalized loss per zone.
+%                      For 'CritTime': weighted functionality per zone.
+%                      For 'UserGoal': goal satisfaction per zone.
 
 %% Step 1: Validate inputs
 % Basic presence checks
-if nargin < 6
-    error(['EvaluatePowerGasSeismicRes: not enough input args. ', ...
+if nargin < 7
+    error(['EvaluatePowerGasWorstCaseRes: not enough input args. ', ...
         'Need PowerSystem, GasSystem, PowerGasInterdependency, AttackParams,OperatorParams,TerminalZone,ResEvaParams.']);
 end
 
@@ -115,7 +116,7 @@ if ~isfield(ResEvaParams,'RepairCrew')
 end
 if ~isnumeric(ResEvaParams.RepairCrew) || numel(ResEvaParams.RepairCrew)~=2 || any(ResEvaParams.RepairCrew<=0) ||...
         any(floor(ResEvaParams.RepairCrew)~=ResEvaParams.RepairCrew)
-    error('ResEvaParams.RepairCrew must be a 1x3 array of positive integers, e.g., [P G].');
+    error('ResEvaParams.RepairCrew must be a 1x2 array of positive integers, e.g., [P G].');
 end
 
 % ResMetric & metric-specific inputs
@@ -143,15 +144,20 @@ switch ResEvaParams.ResMetric
             end
         end        
     case 'CritTime'
-        if ~isfield(ResEvaParams,'CritTimes') || isempty(ResEvaParams.CritTimes) || ~isnumeric(ResEvaParams.CritTimes)
+        if ~isfield(ResEvaParams,'CritTimes') || isempty(ResEvaParams.CritTimes)
             ResEvaParams.CritTimes = [0, 3, 7, 30, 90];
         end
+        validateattributes(ResEvaParams.CritTimes, {'numeric'}, ...
+            {'real','vector','finite','nonnegative'}, mfilename, 'ResEvaParams.CritTimes');
         if ~isfield(ResEvaParams,'CritWeights') || isempty(ResEvaParams.CritWeights)
             ResEvaParams.CritWeights = ones(size(ResEvaParams.CritTimes));
-        elseif numel(ResEvaParams.CritWeights) ~= numel(ResEvaParams.CritTimes)
-            error('ResEvaParams.CritWeights must have the same length as ResEvaParams.CritTimes.');
         end
-        % normalize weights to sum = 1
+        validateattributes(ResEvaParams.CritWeights, {'numeric'}, ...
+            {'real','vector','finite','nonnegative','numel',numel(ResEvaParams.CritTimes)}, ...
+            mfilename, 'ResEvaParams.CritWeights');
+        if ~any(ResEvaParams.CritWeights)
+            error('ResEvaParams.CritWeights must contain at least one positive value.');
+        end
         ResEvaParams.CritWeights = ResEvaParams.CritWeights(:) / sum(ResEvaParams.CritWeights(:));
 end
 
@@ -219,6 +225,13 @@ end
 % Store system-level outputs
 TimeAxisAll  = PowerSysFunsEvo(:,1);
 
+if ~exist('PowerResilienceGoal','var')
+    PowerResilienceGoal = [];
+end
+if ~exist('GasResilienceGoal','var')
+    GasResilienceGoal = [];
+end
+
 %% Step 4: resilience assessment based on the select ResMetric
 % power resilience assessment 
 [PowerSysRes, PowerZoneRes] = WorstCaseResilienceEvaluation( ...
@@ -234,16 +247,16 @@ end
 
 function AttackStrategy = SolveWorstCaseAttackPowerGas(AttackParams,OperatorParams,PowerSystem,GasSystem,PowerGasInterdependency,TerminalZone)
 % INTRODUCTION:
-%   Solve the worst?case attack selection for interdependent power每gas systems
+%   Solve the worst-case attack selection for interdependent power-gas systems
 %   under the specified attacker model and operator modeling choice. Supports
-%   location?constrained (LC) and non?location?constrained (NLC) attacker models
+%   location-constrained (LC) and non-location-constrained (NLC) attacker models
 %   and dispatch evaluation via MF or DCPF for the power system.
 %
 % INPUT:
 %   AttackParams            : struct with fields
 %       .AttackType         : 'LC' | 'NLC'
 %       .Radius             : positive scalar (required when AttackType='LC')
-%       .InvulnerableCom    : optional [TotCom℅1] 0/1 vector; 1 means invulnerable
+%       .InvulnerableCom    : empty, or a structure with Power and Gas Node/Edge fields using local component IDs
 %   OperatorParams          : struct with fields
 %       .PowerFunMetric     : 'MF' | 'DCPF'
 %   PowerSystem, GasSystem  : CIS structs (with .Node, .Edge)
@@ -261,8 +274,8 @@ switch AttackParams.AttackType
         systems = {PowerSystem, GasSystem};
         MergedCIS = Merge_CIS(systems);
         % Defaults for invulnerable comps and defense vector
-        if ~isfield(AttackParams, 'InvulnerableCom') || isempty(AttackParams.InvulnerableCom)
-            AttackParams.InvulnerableCom = zeros(MergedCIS.TotCom, 1);
+        if ~isfield(AttackParams, 'InvulnerableCom')
+            AttackParams.InvulnerableCom = [];
         end
         GivenDefense = zeros(MergedCIS.TotCom, 1);
         % Candidate component sets under spatial radius
@@ -270,20 +283,20 @@ switch AttackParams.AttackType
         % Choose worst-case identification model
         switch OperatorParams.PowerFunMetric
             case 'MF'
-                AttackStrategy = LcAttackerRobPowerMFGasMFOperator(PowerSystem, GasSystem, PowerGasInterdependency,...
-                    ComSet, struct(), AttackParams,TerminalZone);
+                AttackStrategy = LcAttackerPowerMFGasMFOperator(PowerSystem, GasSystem, PowerGasInterdependency,...
+                    ComSet, OperatorParams, AttackParams,TerminalZone);
             case 'DCPF'
-                AttackStrategy = LcAttackerRobPowerDCPFGasMFOperator(PowerSystem, GasSystem, PowerGasInterdependency,...
-                    ComSet, struct(), AttackParams,TerminalZone);
+                AttackStrategy = LcAttackerPowerDCPFGasMFOperator(PowerSystem, GasSystem, PowerGasInterdependency,...
+                    ComSet, OperatorParams, AttackParams,TerminalZone);
         end
     case 'NLC'
         % Choose worst-case identification model
         switch OperatorParams.PowerFunMetric
             case 'MF'
-                AttackStrategy = NLcAttacterRobPowerMFGasMFOperator( PowerSystem, GasSystem, PowerGasInterdependency,...
+                AttackStrategy = NLcAttackerPowerMFGasMFOperator( PowerSystem, GasSystem, PowerGasInterdependency,...
                     OperatorParams, AttackParams, TerminalZone);
             case 'DCPF'
-                AttackStrategy = NLcAttacterRobPowerDCPFGasMFOperator( PowerSystem, GasSystem, PowerGasInterdependency,...
+                AttackStrategy = NLcAttackerPowerDCPFGasMFOperator( PowerSystem, GasSystem, PowerGasInterdependency,...
                     OperatorParams, AttackParams, TerminalZone);
         end
 end
@@ -297,12 +310,12 @@ function CISComDamgScenario = buildWorstCaseDamageScenario(CIS, ComDamgScenario,
 %   Hazus-style restoration parameters (Excel), with simple rules for pipes.
 %
 % INPUT:
-%   CIS             : system struct with arrays CIS.Node (1℅N), CIS.Edge (1℅E)
+%   CIS             : system struct with arrays CIS.Node (1xN), CIS.Edge (1xE)
 %   ComDamgScenario : struct with fields .Node (list of node IDs), .Edge (list of edge IDs)
 %   SystemType      : 'power' | 'gas' | 'water'
 %
 % OUTPUT:
-%   CISComDamgScenario : K℅4 numeric matrix, each row = [compType, compID, repairTime, system_type]
+%   CISComDamgScenario : Kx4 numeric matrix, each row = [compType, compID, repairTime, system_type]
 %                        compType: 1=node, 2=edge; system_type: power=1, gas=2, water=3
 
 % Output rows: [compType, compID, repairTime, system_type]
@@ -392,20 +405,21 @@ function [SysRes, ZoneRes] = WorstCaseResilienceEvaluation( ...
 % INPUTS
 %   ResEvaParams    : struct with fields depending on metric:
 %       .ResMetric   : 'ResLoss' | 'CritTime' | 'UserGoal'
-%       .CritTimes   : 1℅K vector of time checkpoints (for 'CritTime' only)
-%       .CritWeights : 1℅K vector of nonnegative weights, sum normalized to 1 (for 'CritTime' only)
-%   SysFunsEvoAll     : [T℅2] (col1=time, col2=functionality LOSS)
-%   ZoneStateEvoAll   : [Z℅(1+M)] (col1=ZoneID, others=zone functionality)
-%   TimeAxisAll       : [M℅1] time vector matching ZoneStateEvoAll columns 2..end
-%   SysResLossAll     : [1℅3] = [normLoss, realRes, targetRes]
-%   TerminalZone      : 1℅Z struct array (uses .Population for 'UserGoal' weighting)
-%   ResilienceGoal    : [Z℅1] zone goals (only for 'UserGoal')
+%       .CritTimes   : 1xK vector of time checkpoints (for 'CritTime' only)
+%       .CritWeights : 1xK vector of nonnegative weights, sum normalized to 1 (for 'CritTime' only)
+%   SysFunsEvoAll     : [Tx4] = [time, normalized functionality loss,
+%                       post-disaster functionality, pre-disaster functionality]
+%   ZoneStateEvoAll   : [Zx(1+M)] (col1=ZoneID, others=zone functionality)
+%   TimeAxisAll       : [Mx1] time vector matching ZoneStateEvoAll columns 2..end
+%   SysResLossAll     : scalar normalized resilience loss
+%   TerminalZone      : 1xZ struct array (uses .Population for 'UserGoal' weighting)
+%   ResilienceGoal    : [Zx1] zone goals (only for 'UserGoal')
 
 
 %
 % OUTPUTS
 %   SysRes            : scalar 
-%   ZoneRes           : [Z℅2] = [ZoneID, mean across simulations]
+%   ZoneRes           : [Zx2] = [ZoneID, value]
 
 Z  = numel(TerminalZone);
 SysRes = nan(1,1);
@@ -417,7 +431,7 @@ switch ResEvaParams.ResMetric
         % System scope
         SysRes = SysResLossAll(1);
         
-        % Zone scope: per-zone mean normalized loss from ZoneStateEvoAll/TimeAxisAll
+        % Zone scope: per-zone normalized loss from ZoneStateEvoAll/TimeAxisAll
         for z = 1:Z
             dt   = diff(TimeAxisAll(:));
             gmid = ZoneStateEvoAll(z,2:end-1).';
@@ -448,8 +462,8 @@ switch ResEvaParams.ResMetric
         t  = TimeAxisAll(:);
         for z = 1:Z
             gz = ZoneStateEvoAll(z,2:end).';
-            idx = find(round(gz) >= 1, 1, 'first');
-            ZoneRes(z,2) = double(t (idx) <= ResilienceGoal(z));
+            idx = find(gz >= 1 - 1e-9, 1, 'first');
+            ZoneRes(z,2) = ~isempty(idx) && t(idx) <= ResilienceGoal(z);
         end
         
         wZ = [TerminalZone.Population]' ./ max(sum([TerminalZone.Population]), eps);

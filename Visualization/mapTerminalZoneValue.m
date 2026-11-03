@@ -2,25 +2,23 @@ function mapTerminalZoneValue(TerminalZone, Value, options)
 % INTRODUCTION
 %   Draws colored polygons from a TerminalZone struct using fill(). Each
 %   cell is shaded according to its corresponding Value entry. Designed for
-%   1¡ÁN TerminalZone arrays (fields .X, .Y). NaN values use NaNColor. If
-%   options.AxesOpt is given, drawing occurs on that axes; otherwise a new
-%   figure is created. A colorbar labeled by ValueLabel is added
-%   automatically.
+%   1-by-N TerminalZone arrays (fields .X, .Y). If options.AxesOpt is
+%   given, drawing occurs on that axes; otherwise a new figure is created.
 
 % INPUT
-%   TerminalZone : 1¡ÁN struct array. Each element must include:
-%                  .X (1¡ÁK double) ¡ª polygon vertex X coordinates (may end with NaN)
-%                  .Y (1¡ÁK double) ¡ª polygon vertex Y coordinates (may end with NaN)
+%   TerminalZone : 1-by-N struct array. Each element must include:
+%                  .X (1-by-K double) - polygon vertex X coordinates (may end with NaN)
+%                  .Y (1-by-K double) - polygon vertex Y coordinates (may end with NaN)
 %                  Additional fields (if any) are ignored.
 %
-%   Value        : N¡Á1 or 1¡ÁN numeric vector, one scalar per polygon.
-%                  Finite entries are used for color mapping; NaN entries use NaNColor.
+%   Value        : N-by-1 or 1-by-N numeric vector, one scalar per polygon.
+%                  Finite entries are used for color mapping; NaN and Inf use NaNColor.
 %
 %   options      : (optional) struct controlling appearance and behavior:
 %       - FigureColor : figure background color (default = 'white')
 %       - ValueLimits : [vmin vmax] (default = finite data range)
-%       - Colormap    : M¡Á3 colormap matrix (default = parula(256))
-%       - NaNColor    : 1¡Á3 RGB triplet for NaN polygons (default = [0.8 0.8 0.8])
+%       - Colormap    : M-by-3 colormap matrix (default = parula(256))
+%       - NaNColor    : 1-by-3 RGB triplet for NaN polygons (default = [0.8 0.8 0.8])
 %       - EdgeColor   : RGB triplet for polygon edges (default = [0.4 0.4 0.4])
 %       - EdgeAlpha   : edge transparency, scalar in [0,1] (default = 0.4)
 %       - FaceAlpha   : face transparency, scalar in [0,1] (default = 1)
@@ -28,7 +26,7 @@ function mapTerminalZoneValue(TerminalZone, Value, options)
 %       - ValueLabel  : string used as colorbar label (default = 'Value')
 % 
 % OUTPUT
-%   none ¡ª this is a renderer that draws directly to a figure or provided axes.
+%   none - this is a renderer that draws directly to a figure or provided axes.
 %          If AxesOpt is not provided, a new figure is created. A colorbar
 %          is added with label specified by ValueLabel, and axes are set to
 %          equal and tight with axis visibility turned off.
@@ -52,13 +50,38 @@ FaceAlpha    = gopt(options,'FaceAlpha',1);
 AxesOpt      = gopt(options,'AxesOpt',[]);
 ValueLabel   = gopt(options,'ValueLabel','Value'); 
 
+if ~isnumeric(Cmap) || ~ismatrix(Cmap) || isempty(Cmap) || size(Cmap,2) ~= 3 || ...
+        ~isreal(Cmap) || any(~isfinite(Cmap(:))) || any(Cmap(:) < 0 | Cmap(:) > 1)
+    error('options.Colormap must be a nonempty finite M-by-3 numeric matrix with values in [0,1].');
+end
+if ~isnumeric(NaNColor) || numel(NaNColor) ~= 3 || ~isreal(NaNColor) || ...
+        any(~isfinite(NaNColor(:))) || any(NaNColor(:) < 0 | NaNColor(:) > 1)
+    error('options.NaNColor must be a finite RGB triplet with values in [0,1].');
+end
+NaNColor = reshape(NaNColor,1,3);
+if ~isnumeric(EdgeColor) || numel(EdgeColor) ~= 3 || ~isreal(EdgeColor) || ...
+        any(~isfinite(EdgeColor(:))) || any(EdgeColor(:) < 0 | EdgeColor(:) > 1)
+    error('options.EdgeColor must be a finite RGB triplet with values in [0,1].');
+end
+EdgeColor = reshape(EdgeColor,1,3);
+if ~isnumeric(EdgeAlpha) || ~isscalar(EdgeAlpha) || ~isfinite(EdgeAlpha) || ...
+        ~isreal(EdgeAlpha) || EdgeAlpha < 0 || EdgeAlpha > 1
+    error('options.EdgeAlpha must be a finite scalar in [0,1].');
+end
+if ~isnumeric(FaceAlpha) || ~isscalar(FaceAlpha) || ~isfinite(FaceAlpha) || ...
+        ~isreal(FaceAlpha) || FaceAlpha < 0 || FaceAlpha > 1
+    error('options.FaceAlpha must be a finite scalar in [0,1].');
+end
+
 %% Step 3: figure/axes setup
 if isempty(AxesOpt)
     figure('Color',FigureColor);
-    ax = axes; hold(ax,'on');
+    ax = axes;
 else
-    ax = AxesOpt; axes(ax); hold(ax,'on');
+    ax = AxesOpt; axes(ax);
 end
+holdState = ishold(ax);
+hold(ax,'on');
 
 if isempty(CLim)
     finiteVals = Value(isfinite(Value));
@@ -69,9 +92,10 @@ if isempty(CLim)
         if CLim(1)==CLim(2), CLim = CLim + [-0.5 0.5]; end
     end
 else
-    if ~isnumeric(CLim) || numel(CLim) ~= 2
-        error('options.ValueLimits must be a 1¡Á2 numeric vector [min max].');
+    if ~isnumeric(CLim) || numel(CLim) ~= 2 || ~isreal(CLim) || any(~isfinite(CLim(:)))
+        error('options.ValueLimits must be a finite 1-by-2 numeric vector [min max].');
     end
+    CLim = CLim(:).';
     if CLim(1) >= CLim(2)
         error('options.ValueLimits must satisfy ValueLimits(1) < ValueLimits(2).');
     end
@@ -86,7 +110,7 @@ nCmap = size(Cmap,1);
 for k = 1:N
     if isempty(TerminalZone(k).X) || isempty(TerminalZone(k).Y), continue; end
     v = Value(k);
-    if isnan(v)
+    if ~isfinite(v)
         rgb = NaNColor;
     else
         idx = 1 + round((nCmap-1)*(v-CLim(1))/max(eps,CLim(2)-CLim(1)));
@@ -104,10 +128,16 @@ end
 
 axis(ax,'equal');
 axis(ax,'tight'); box(ax,'on');
-colorbar(ax); 
-ylabel(colorbar,ValueLabel);
-hold(ax,'off');
 axis(ax,'off');
+
+cb = colorbar(ax);
+cb.FontSize = 16;
+cb.FontName = 'Times New Roman';
+cb.Label.String = ValueLabel;  
+cb.Label.FontSize = 16;  
+cb.Label.FontName = 'Times New Roman';
+
+if ~holdState, hold(ax,'off'); end
 end
 
 function out = gopt(s,name,default)
@@ -116,6 +146,10 @@ end
 
 function cmap2 = resampleColormap(cmap, targetN)
 m = size(cmap,1);
+if m == 1
+    cmap2 = repmat(cmap,targetN,1);
+    return;
+end
 xi = linspace(1,m,m);
 xo = linspace(1,m,targetN);
 cmap2 = [interp1(xi,cmap(:,1),xo,'linear').', ...

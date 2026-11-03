@@ -2,28 +2,33 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
-load(strcat(CasePath,'\SeismicScenario\SeismicScenarioGivenMaEpID1.mat'),'SeismicScenario');
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
+load(fullfile(CasePath, 'SeismicScenario', 'SeismicScenarioGivenMaEpID1.mat'),'SeismicScenario');
 
 %% Set input
-InterCIS_Type='PowerGasWater'; %% PowerGas | PowerWater | PowerGasWater
+InterCIS_Type='PowerGas'; %% PowerGas | PowerWater | PowerGasWater
 Res_Evaluate_Metric='ResLoss'; %%'ResLoss' | 'CritTime' | 'UserGoal'
 Power_Model_Type='MF'; %% MF | DCPF
-Scenario_Num=5;
+Scenario_Num=100;
 
 Repair_Crew=[1 1 1]; %% [P, G, W] or [P, G] or [P, W]
-Repair_Strategy = 'Rule'; %% Rule | Heuristic 
-Power_Repair_Rule_Type ='degree'; % Needed when Repair_Strategy = Rule, choose from: degree | betweenness | proximity
-Gas_Repair_Rule_Type ='betweenness'; % Needed when Repair_Strategy = Rule, choose from: degree | betweenness | proximity
-Water_Repair_Rule_Type = 'proximity'; % Needed when Repair_Strategy = Rule, choose from: degree | betweenness | proximity
-Sche_Method = 'GA'; %% Needed when Repair_Strategy = Heuristic, chose from: SA | GA 
-
-% When Retrofit_Strategy = 'Rule':
-Retrofit_Rule_Type = 'proximity';  %% Choose from: degree | betweenness | proximity
+Repair_Strategy = 'Rule'; %% Rule | Heuristic
+switch Repair_Strategy
+    case 'Rule'
+        Power_Repair_Rule_Type = 'proximity'; % degree | betweenness | proximity
+        Gas_Repair_Rule_Type = 'proximity'; % degree | betweenness | proximity
+        Water_Repair_Rule_Type = 'proximity'; % degree | betweenness | proximity
+    case 'Heuristic'
+        Sche_Method = 'GA'; % SA | GA
+    otherwise
+        error('Invalid Repair_Strategy. Choose Rule or Heuristic.');
+end
 
 % When Res_Evaluate_Metric = 'CritTime':
 Crit_Times =[1,3,7,10,30,90];
@@ -51,9 +56,9 @@ if strcmp(Res_Evaluate_Metric,'CritTime')
     params.CritTimes=Crit_Times;
 end
 
-%%  Load interdependent Power每Gas systems
+%%  Load interdependent Power-Gas systems
 if strcmp(InterCIS_Type,'PowerGas')
-    load(strcat(CasePath,'\Interdependency\PowerGasSystem_PG5_GP1.mat'),'PowerGasSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerGasSystem_PG5_GP1.mat'),'PowerGasSystem');
     PowerSystem=PowerGasSystem.PowerSystem;
     GasSystem=PowerGasSystem.GasSystem;
     PowerGasInterdependency.PowerToGas=PowerGasSystem.PowerToGas;
@@ -65,9 +70,9 @@ if strcmp(InterCIS_Type,'PowerGas')
     end
 end
 
-%%  Load interdependent Power每Water systems
+%%  Load interdependent Power-Water systems
 if strcmp(InterCIS_Type,'PowerWater')
-    load(strcat(CasePath,'\Interdependency\PowerWaterSystem_PW5_WP1.mat'),'PowerWaterSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerWaterSystem_PW5_WP1.mat'),'PowerWaterSystem');
     PowerSystem=PowerWaterSystem.PowerSystem;
     WaterSystem=PowerWaterSystem.WaterSystem;
     PowerWaterInterdependency.PowerToWater=PowerWaterSystem.PowerToWater;
@@ -79,9 +84,9 @@ if strcmp(InterCIS_Type,'PowerWater')
     end
 end
 
-%% Load interdependent Power每Gas每Water systems
+%% Load interdependent Power-Gas-Water systems
 if strcmp(InterCIS_Type,'PowerGasWater')
-    load(strcat(CasePath,'\Interdependency\PowerGasWaterSystem_PG5_GP1_PW5_WP1.mat'),'PowerGasWaterSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerGasWaterSystem_PG5_GP1_PW5_WP1.mat'),'PowerGasWaterSystem');
     PowerSystem=PowerGasWaterSystem.PowerSystem;
     GasSystem=PowerGasWaterSystem.GasSystem;
     WaterSystem=PowerGasWaterSystem.WaterSystem;

@@ -1,26 +1,23 @@
 function [ landPGDsim,latPGDsim, setPGDsim, LandslideProb,LiquefactionProb] = calculateTerminalZonePGDgivenPGA(TerminalZone, quake_mag, PGAsim)
-    % CALCULATEPGDGIVENPGA Computes PGD (Permanent Ground Deformation) values
-    % based on PGA (Peak Ground Acceleration) simulations.
+    % CALCULATETERMINALZONEPGDGIVENPGA Computes PGD and ground-failure probabilities.
     %
     % Syntax:
-    %   [latPGDsim500, setPGDsim500, landPGDsim500] = calculatePGDgivenPGA(PGAsim, tif_paths, quake_mag)
+    %   [landPGDsim, latPGDsim, setPGDsim, LandslideProb, LiquefactionProb] = ...
+    %       calculateTerminalZonePGDgivenPGA(TerminalZone, quake_mag, PGAsim)
     %
     % Inputs:
-    %   PGAsim    - Matrix of PGA simulation data.
-    %   tif_paths - Struct containing paths to required TIF files (e.g., liquefaction, WTD).
-    %   quake_mag - Earthquake magnitude.
+    %   TerminalZone - Zone structure array containing LandslideSus,
+    %                  LiquefactionSus, and WTD (meters).
+    %   quake_mag    - Earthquake moment magnitude.
+    %   PGAsim       - N-by-S PGA array in g; rows are zones and columns are scenarios.
     %
     % Outputs:
-    %   latPGDsim500 - Lateral PGD values.
-    %   setPGDsim500 - Settlement PGD values.
-    %   landPGDsim500 - Landslide PGD values.
+    %   landPGDsim       - Landslide PGD in inches, with the same size as PGAsim.
+    %   latPGDsim        - Lateral-spreading PGD in inches, with the same size as PGAsim.
+    %   setPGDsim        - Expected settlement PGD in inches, with the same size as PGAsim.
+    %   LandslideProb    - Landslide-susceptible map-area probability, with the same size as PGAsim.
+    %   LiquefactionProb - Liquefaction probability, with the same size as PGAsim.
     %
-    % Example:
-    %   [latPGD, setPGD, landPGD] = calculatePGDgivenPGA(PGAsim, tif_paths, 7.5);
-    %
-    % Author:
-    %   [Your Name or Organization]
-    %   [Date]
 
     liqu_sus = map_lique_ratio_level([TerminalZone.LiquefactionSus]');
     land_sus = map_land_ratio_level([TerminalZone.LandslideSus]');
@@ -45,10 +42,10 @@ end
 
 function liqu_sus = map_lique_ratio_level(liq_value)
 
-    % Define the ac/ais values (provided data)
+    % Map liquefaction-susceptible map-area fractions to levels 0-5.
     five_values = [0, 0.02, 0.05, 0.1, 0.2, 0.25];
 
-    % Define the corresponding e_d values, from Hazus Fig 4-13
+    % Corresponding liquefaction susceptibility levels.
     five_levels = [0, 1, 2, 3, 4, 5];
     [~, idx] = min(abs(five_values - liq_value), [], 2);
     liqu_sus = five_levels(idx);
@@ -58,12 +55,12 @@ end
 
 function land_sus = map_land_ratio_level(land_value)
 
-    % Define the ac/ais values (provided data)
+    % Map landslide-susceptible map-area fractions to levels 0-5.
     five_values = [0, 0.01, 0.03, 0.1, 0.2, 0.3];
 
-    % Define the corresponding e_d values, from Hazus Fig 4-13
+    % Corresponding landslide susceptibility levels.
     five_levels = [0, 1, 2, 3, 4, 5];
-    % Find the index of the closest value in ac_ais_values for each element in ac_ais
+    % Assign the level associated with the nearest reference fraction.
     [~, idx] = min(abs(five_values - land_value), [], 2);
 
     land_sus = five_levels(idx);
@@ -75,26 +72,17 @@ function latPGDsim500 = calculateLatPGD(PGAsim, liqu_susc, quake_mag)
     % CALCULATELATPGD Computes lateral PGD based on PGA and liquefaction susceptibility.
     %
     % Syntax:
-    %   latPGDsim500 = calculateLatPGD(PGAsim, lique_tif, quake_mag)
+    %   latPGDsim500 = calculateLatPGD(PGAsim, liqu_susc, quake_mag)
     %
     % Inputs:
-    %   PGAsim    - Matrix of PGA simulation data.
-    %   lique_tif - Path to liquefaction susceptibility TIF file.
-    %   quake_mag - Earthquake magnitude.
+    %   PGAsim    - N-by-S PGA array in g.
+    %   liqu_susc - N-by-1 liquefaction susceptibility levels from 0 to 5.
+    %   quake_mag - Earthquake moment magnitude.
     %
     % Outputs:
-    %   latPGDsim500 - Lateral PGD values.
-    %
-    % Example:
-    %   latPGD = calculateLatPGD(PGAsim, 'path/to/lique.tif', 7.5);
+    %   latPGDsim500 - Lateral-spreading PGD in inches, with the same size as PGAsim.
 
     K_d = 0.0086 * quake_mag.^3 - 0.0914 * quake_mag.^2 + 0.4698 * quake_mag - 0.9835;
-
-    % [lique_data, lique_R] = readgeoraster(lique_tif);
-    % liqu_susc = get_value_from_tif(PGAsim(:, [2, 3]), lique_data, lique_R);
-
-    % Ensure liqu_susc is a column vector
-    % liqu_susc = liqu_susc(:);
 
     % Initialize output vector
     E_PGD_Lateral = zeros(size(PGAsim));
@@ -125,33 +113,24 @@ function [setPGDsim500,P_Liquefaction] = calculateSetPGD(PGAsim, liqu_susc, wtd_
     % CALCULATESETPGD Computes settlement PGD based on PGA, liquefaction susceptibility, and WTD.
     %
     % Syntax:
-    %   setPGDsim500 = calculateSetPGD(PGAsim, lique_tif, wtd_tif, quake_mag)
+    %   [setPGDsim500, P_Liquefaction] = calculateSetPGD(PGAsim, liqu_susc, wtd_values, quake_mag)
     %
     % Inputs:
-    %   PGAsim    - Matrix of PGA simulation data.
-    %   lique_tif - Path to liquefaction susceptibility TIF file.
-    %   wtd_tif   - Path to water table depth (WTD) TIF file.
-    %   quake_mag - Earthquake magnitude.
+    %   PGAsim    - N-by-S PGA array in g.
+    %   liqu_susc - N-by-1 liquefaction susceptibility levels from 0 to 5.
+    %   wtd_values - N-by-1 water-table depths in feet.
+    %   quake_mag - Earthquake moment magnitude.
     %
     % Outputs:
-    %   setPGDsim500 - Settlement PGD values.
-    %
-    % Example:
-    %   setPGD = calculateSetPGD(PGAsim, 'path/to/lique.tif', 'path/to/wtd.tif', 7.5);
-
-    % [lique_data, lique_R] = readgeoraster(lique_tif);
-    % liqu_susc = get_value_from_tif(PGAsim(:, [2, 3]), lique_data, lique_R);
-    % liqu_susc = liqu_susc(:);
-    % 
-    % [wtd_data, wtd_R] = readgeoraster(wtd_tif);
-    % wtd_values = get_value_from_tif(PGAsim(:, [2, 3]), wtd_data, wtd_R);
+    %   setPGDsim500  - Probability-weighted settlement PGD in inches.
+    %   P_Liquefaction - Liquefaction probability, with the same size as PGAsim.
 
     KM = 0.0027 * quake_mag.^3 - 0.0267 * quake_mag.^2 - 0.2055 * quake_mag + 2.9188;
     KW = 0.022 * wtd_values + 0.93;
 
     pga = PGAsim;
 
-    % Initialize K_sa values based on liquefaction susceptibility levels
+    % Assign characteristic settlement K_sa (inches) by susceptibility level.
     K_sa = zeros(size(liqu_susc));
     K_sa(liqu_susc == 5) = 12;
     K_sa(liqu_susc == 4) = 6;
@@ -162,7 +141,7 @@ function [setPGDsim500,P_Liquefaction] = calculateSetPGD(PGAsim, liqu_susc, wtd_
     % Compute liquefaction probability
     P_Liquefaction = simulate_lique_pro(pga, liqu_susc, KM, KW);
 
-    % Compute settlement PGD
+    % Compute probability-weighted expected settlement PGD.
     setPGDsim500 = K_sa .* P_Liquefaction;
 end
 
@@ -170,21 +149,15 @@ function landPGDsim = calculateLandPGD(PGAsim, land_susc, quake_mag)
     % CALCULATELANDPGD Computes landslide PGD based on PGA and susceptibility.
     %
     % Syntax:
-    %   landPGDsim = calculateLandPGD(PGAsim, land_tif, quake_mag)
+    %   landPGDsim = calculateLandPGD(PGAsim, land_susc, quake_mag)
     %
     % Inputs:
-    %   PGAsim    - Matrix of PGA simulation data.
-    %   land_tif  - Path to landslide susceptibility TIF file.
-    %   quake_mag - Earthquake magnitude.
+    %   PGAsim    - N-by-S PGA array in g.
+    %   land_susc - N-by-1 landslide susceptibility levels from 0 to 5.
+    %   quake_mag - Earthquake moment magnitude.
     %
     % Outputs:
-    %   landPGDsim - Landslide PGD values.
-    %
-    % Example:
-    %   landPGD = calculateLandPGD(PGAsim, 'path/to/land.tif', 7.5);
-
-    % [land_data, land_R] = readgeoraster(land_tif);
-    % land_susc = get_value_from_tif(PGAsim(:, [2, 3]), land_data, land_R);
+    %   landPGDsim - Landslide PGD in inches, with the same size as PGAsim.
 
     K_l = 0.3419 * quake_mag.^3 - 5.5214 * quake_mag.^2 + 33.6154 * quake_mag - 70.7692;
 
@@ -198,8 +171,9 @@ function landPGDsim = calculateLandPGD(PGAsim, land_susc, quake_mag)
     PGAC(land_susc == 1) = 0.6;
 
     ac_ais_ratio = PGAC ./ PGAsim;
-
-    E_d_pga = get_ed_pga_value(ac_ais_ratio);
+    activeLandslide = PGAsim > PGAC;
+    E_d_pga = zeros(size(PGAsim));
+    E_d_pga(activeLandslide) = get_ed_pga_value(ac_ais_ratio(activeLandslide));
 
     E_PGD_Landslide = K_l .* E_d_pga .* PGAsim;
 
@@ -216,11 +190,10 @@ function e_d = get_ed_pga_value(ac_ais)
     %   e_d = get_ed_pga_value(ac_ais)
     %
     % Inputs:
-    %   ac_ais - Column vector of ac/ais ratios.
+    %   ac_ais - Array of ac/ais ratios.
     %
     % Outputs:
-    %   e_d    - Column vector of deformation values corresponding to the input
-    %            ac/ais ratios.
+    %   e_d    - Deformation factors corresponding to ac_ais, with the same size.
     %
     % Description:
     %   This function calculates the deformation values (e_d) for given ac/ais
@@ -231,7 +204,7 @@ function e_d = get_ed_pga_value(ac_ais)
     %   ac_ais = [0.1; 0.2; 0.3];
     %   e_d = get_ed_pga_value(ac_ais);
 
-    % Define the ac/ais values (provided data)
+    % Lookup-table ac/ais values digitized from Hazus Figure 4-13.
     ac_ais_values = [0.09959, 0.09961, 0.12863, 0.12924, 0.15905, ...
                      0.17204, 0.18808, 0.2185, 0.23568, 0.24892, ...
                      0.27933, 0.28835, 0.2973, 0.32634, 0.33224, ...
@@ -243,7 +216,7 @@ function e_d = get_ed_pga_value(ac_ais)
                      0.76191, 0.78227, 0.78958, 0.81413, 0.81449, ...
                      0.84079, 0.8493, 0.86571, 0.88925, 0.88996];
 
-    % Define the corresponding e_d values, from Hazus Fig 4-13
+    % Corresponding expected displacement factors from Hazus Figure 4-13.
     e_d_values = [38.68, 38.67, 31.307, 31.174, 25.339, ...
                   22.994, 20.509, 17.041, 15.087, 13.792, ...
                   11.764, 11.238, 10.582, 8.565, 8.265, ...
@@ -265,24 +238,24 @@ function e_d = get_ed_pga_value(ac_ais)
     end
 
     % Return corresponding e_d values
-    e_d = e_d_values(idx);
+    e_d = reshape(e_d_values(idx), size(ac_ais));
 end
 
 function P_Liquefaction = simulate_lique_pro(pga, liqu_susc, KM, KW)
-    % SIMULATE_LIQUE_PRO Simulates liquefaction-induced settlement probability.
+    % SIMULATE_LIQUE_PRO Computes liquefaction probability.
     %
     % Syntax:
     %   P_Liquefaction = simulate_lique_pro(pga, liqu_susc, KM, KW)
     %
     % Inputs:
-    %   pga       - Column vector of peak ground acceleration values (g).
+    %   pga       - N-by-S peak ground acceleration array in g.
     %   liqu_susc - Column vector of liquefaction susceptibility levels (1-5):
     %               1 = Very Low, 2 = Low, 3 = Moderate, 4 = High, 5 = Very High.
-    %   KM        - Model parameter for liquefaction probability.
-    %   KW        - Water table depth scaling factor.
+    %   KM        - Earthquake-magnitude correction factor.
+    %   KW        - Groundwater-depth correction factor.
     %
     % Outputs:
-    %   P_Liquefaction - Column vector of liquefaction probabilities (0 to 1).
+    %   P_Liquefaction - Liquefaction probabilities from 0 to 1, with the same size as pga.
     %
     % Description:
     %   This function calculates the probability of liquefaction based on the
@@ -297,12 +270,12 @@ function P_Liquefaction = simulate_lique_pro(pga, liqu_susc, KM, KW)
     %   KW = 1.2;
     %   P_Liquefaction = simulate_lique_pro(pga, liqu_susc, KM, KW);
 
-    % Ensure pga and liqu_susc are column vectors
+    % Ensure the zone-level susceptibility input is a column vector.
     liqu_susc = liqu_susc(:);
 
     % Initialize output vectors
-    P_ml = zeros(size(liqu_susc));    % Maximum liquefaction probability
-    P_liq_E = zeros(size(pga));      % Liquefaction probability equation
+    P_ml = zeros(size(liqu_susc));    % Susceptible proportion of each map unit
+    P_liq_E = zeros(size(pga));      % Conditional liquefaction probability
 
     % Assign values based on liquefaction susceptibility levels
     % Very High susceptibility (level 5)
@@ -325,6 +298,10 @@ function P_Liquefaction = simulate_lique_pro(pga, liqu_susc, KM, KW)
     P_ml(liqu_susc == 1) = 0.02;
     P_liq_E(liqu_susc == 1, :) = 4.16 * pga(liqu_susc == 1, :) - 1.08;
 
+    % Limit the conditional liquefaction probability before applying the
+    % susceptibility, magnitude, and groundwater correction factors.
+    P_liq_E = max(0, min(1, P_liq_E));
+
     % Calculate liquefaction probability
     P_Liquefaction = (P_liq_E ./ (KM .* KW)) .* P_ml;
 
@@ -335,8 +312,9 @@ end
 
 
 function P_Landslide = calculate_land_prob(land_susc, PGAsim)
+    % Compute susceptible map-area probability where PGA exceeds the critical value.
 
-    P_Landslide = zeros(size(PGAsim));    % Initialize output vector
+    P_Landslide = zeros(size(PGAsim));    % Initialize output array
 
     PGAC = inf(size(land_susc));
     PGAC(land_susc == 5) = 0.05;

@@ -2,30 +2,30 @@ clc
 clear
 close all
 
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
+addpath(genpath(CIGRA_root));
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
 %% Set input 
 CIS_Type = 'power'; %% power | gas | water
 Model_Type = 'DCPF'; %% MF | DCPF
-AttackRadius = 5;  %% attack radius (km)
+AttackRadius = 3;  %% attack radius (km)
 
 %% Set parameter
 OperatorParams = struct;
 OperatorParams.SystemType = CIS_Type;
 
 DefenderParams = struct;
-DefenderParams.Budget = 2; % defend budget
+DefenderParams.Budget = 1; % defend budget
 DefenderParams.InvulNode = [];
 DefenderParams.InvulEdge = [];
-DefenderParams.InvalidDefense = [];
 
 AttackerParams = struct;
 AttackerParams.Radius = AttackRadius;
-AttackerParams.InvulNode = [];
-AttackerParams.InvulEdge = [];
-AttackerParams.InvalidStrategy = [];
-
+AttackerParams.InvulnerableCom = [];
 %% Load power system data
 if strcmp(CIS_Type, 'power')
     load(fullfile(CasePath, 'Power', 'PowerSystem.mat'), 'PowerSystem');
@@ -53,9 +53,9 @@ if strcmp(CIS_Type, 'gas')
     AttackerParams.NodeAttackCost = ones(length(CIS.Node), 1);
     AttackerParams.EdgeAttackCost = ones(length(CIS.Edge), 1);
     
-    % Validate model type
-    if ~ismember(Model_Type, ["MF","DCPF"])
-        error('Invalid input. Please set Model_Type as MF or DCPF.');
+    % Gas systems use the maximum-flow model
+    if ~strcmp(Model_Type, 'MF')
+        error('Gas systems only support Model_Type = MF.');
     end
 end
 %% Load water system data
@@ -69,9 +69,9 @@ if strcmp(CIS_Type, 'water')
     AttackerParams.NodeAttackCost = ones(length(CIS.Node), 1);
     AttackerParams.EdgeAttackCost = ones(length(CIS.Edge), 1);
     
-    % Validate model type
-    if ~ismember(Model_Type, ["MF","DCPF"])
-        error('Invalid input. Please set Model_Type as MF or DCPF.');
+    % Water systems use the maximum-flow model
+    if ~strcmp(Model_Type, 'MF')
+        error('Water systems only support Model_Type = MF.');
     end
 end
 
@@ -93,21 +93,24 @@ ComSet = maximal_component_set_3D(CIS, AttackRadius);
 switch Model_Type
     case 'MF'
         [OptObj, BestDefendStrategy, BestAttackStrategy] = ...
-            ComProtectDefenderLcAttackerRobMFOperator(...
+            ComProtectDefenderLcAttackerMFOperator(...
                 CIS, DefenderParams, AttackerParams, OperatorParams, ComSet, TerminalZone);
     case 'DCPF'
         [OptObj, BestDefendStrategy, BestAttackStrategy] = ...
-            ComProtectDefenderLcAttackerRobDCPFOperator(...
+            ComProtectDefenderLcAttackerDCPFOperator(...
                 CIS, DefenderParams, AttackerParams, OperatorParams, ComSet, TerminalZone);
 end
 %% Visualization
-[lon,lat]=v_projection(BestAttackStrategy.Center(1),BestAttackStrategy.Center(2),BestAttackStrategy.Center(3));
-layoutOptions1= struct('SystemType', 'gas',  'FlowSource','system');
+ [lon,lat]=v_projection(BestAttackStrategy.Center(1),BestAttackStrategy.Center(2),BestAttackStrategy.Center(3));
+layoutOptions1= struct('SystemType', CIS_Type, 'FlowSource','system');
 Region1 = arrayfun(@(id) struct('Shape','circle', ...
     'Center',[CIS.Node(id).Longitude, CIS.Node(id).Latitude], ...
     'Radius',1.5), BestDefendStrategy.Node);
-Region1(3).Shape = 'circle';Region1(3).Center = [lon,lat];Region1(3).Radius=5;
-mapCircledRegion(AreaBoundary, CIS, 'Flow', layoutOptions1, Region1);
+if isempty(Region1)
+    Region1 = struct('Shape',{},'Center',{},'Radius',{});
+end
+Region1(end+1) = struct('Shape','circle', 'Center',[lon,lat], 'Radius',AttackRadius);
+mapCISRegionOverlay(AreaBoundary, CIS, 'Flow', layoutOptions1, Region1);
 %% Print results
 disp('Best Defense Strategy:');
 disp('Defended Nodes:');
@@ -121,7 +124,7 @@ disp(BestAttackStrategy.Node);
 disp('Attacked Edges:');
 disp(BestAttackStrategy.Edge);
 
-if isfield(BestAttackStrategy, 'Center')
+if isfield(BestAttackStrategy, 'Center') && ~isempty(BestAttackStrategy.Center)
     disp('Attack Center: [Longitude, Latitude, Radius(km)]');
-    disp([BestAttackStrategy.Center(1), BestAttackStrategy.Center(2), BestAttackStrategy.Center(3)]);
+    disp([lon, lat, AttackRadius]);
 end

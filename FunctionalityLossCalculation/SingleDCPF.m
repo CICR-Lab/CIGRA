@@ -1,45 +1,45 @@
 function [SysFunLoss, ComState, ZoneState] = SingleDCPF(CIS, CISComDamgScenario, params, TerminalZone)
 % INTRODUCTION:
-% SingleDCPFModel for calculating power system functionality loss
+% SingleDCPF calculates power-system functionality loss
 % under the given damage scenario. It uses DC power flow constraints
 % to optimize system functionality post-disaster, considering node and edge damage.
 %
 % INPUT:
-% CIS 每 struct of power system information with two arrays, CIS.Node (1℅N) and CIS.Edge (1℅E).
+% CIS - struct of power system information with two arrays, CIS.Node (1 x N) and CIS.Edge (1 x E).
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%             每 Voltage, ServiceZone, ClassName, SeismicFragilityType
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
-%             每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%             - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
 %
-%   CISComDamgScenario 每 K℅2 matrix of damaged components:
+%   CISComDamgScenario - K x 2 matrix of damaged components:
 %         [DamageType (1=node, 2=edge), DamageComponentID]
 %
-%   params 每 struct containing the following fields:
+%   params - struct containing the following fields:
 %         SystemType: 'power'
-%         NodeWeight: N℅1 vector representing node weights (default to ones if missing)
+%         NodeWeight: N x 1 vector representing node weights (default to ones if missing)
 %         RefNode: Reference node ID for phase angle calculation
 %
-%   TerminalZone 每 struct
-%         Population: A vector where each element represents the population of the corresponding zone.
+%   TerminalZone - structure array defining zones.
+%         numel(TerminalZone) gives the number of zones.
 %
 % OUTPUT:
-%   SysFunLoss 每 1℅3 vector containing:
-%         每 SysFunLoss(1): Normalized functionality drop (1 - post-disaster functionality / pre-disaster functionality).
-%         每 SysFunLoss(2): Post-disaster functionality.
-%         每 SysFunLoss(3): Pre-disaster functionality.
+%   SysFunLoss - 1 x 3 vector containing:
+%         - SysFunLoss(1): Normalized served-demand loss (1 - post-disaster demand / pre-disaster demand).
+%         - SysFunLoss(2): Post-disaster served demand.
+%         - SysFunLoss(3): Pre-disaster target demand.
 %
-%   ComState 每 struct containing the post-disaster states of the system:
+%   ComState - struct containing the post-disaster states of the system:
 %         ComState.Node: Nx3 matrix, where N is the number of nodes:
-%             每 NodeID, Post-disaster real demand, Post-disaster real generation
+%             - NodeID, post-disaster real demand, post-disaster real generation
 %         ComState.Edge: Mx2 matrix, where M is the number of edges:
-%             每 EdgeID, Post-disaster real flow
-%   ZoneState: Z℅2 matrix:
-%                 每 ZoneID, Service state
+%             - EdgeID, post-disaster real flow
+%   ZoneState: Z x 2 matrix, where Z is numel(TerminalZone):
+%             - ZoneID, service state
 
 %% Step 1: Default input validation
-% Validate SystemType and FunMetric
+% Validate SystemType
 if ~strcmp(params.SystemType, 'power')
     error('Invalid SystemType. It should be "power".');
 end
@@ -48,15 +48,9 @@ if ~isfield(params, 'NodeWeight')
     params.NodeWeight = ones(size(CIS.Node, 2), 1); % Default to ones (N x 1)
 end
 
-% Validate SystemType and FunMetric
-validSystems = {'power', 'gas', 'water'};
-if ~ismember(params.SystemType, validSystems)
-    error('Invalid SystemType. It should be one of: power, gas, or water.');
-end
-
-% If FunMetric is 'Pop', ZoneInfo must be provided
+% TerminalZone is required
 if nargin < 4
-    error('ZoneInfo must be provided.');
+    error('TerminalZone must be provided.');
 end
 
 % Set default RefNode if not provided
@@ -78,18 +72,18 @@ if ~isempty(CISComDamgScenario)
     edgeState(CISComDamgScenario(CISComDamgScenario(:,1) == 2, 2)) = 0; % Edge damage
 end
 %% Step 3: Define the decision variables and objective function
-
 % Decision variables:
-% Real demand (d_n), real generation (s_n), phase angle (牟_n) for each node, real flow (f_e) for each edge.
+% Real demand (d_n), real generation (s_n), phase angle (theta_n) for each node, and real flow (f_e) for each edge.
 numVariables = 3 * N + E; % 3 * N for node demand, generation and phase angle, E for edge flow
 
-% Objective function: minimize (sum of real demand * node weight) / sum of target demand for all nodes
+% Objective: maximize weighted served demand by minimizing its negative normalized value
 f = zeros(numVariables, 1);
 f(1:N) = -params.NodeWeight./totalDemand; % For real demand (d_n), weighted by NodeWeight
 
 %% Step 4: Define the constraints for the LP
-A = []; % Coefficients for constraints
-b = []; % Right-hand side for constraints
+tag=0;
+A = zeros(N+E+1,numVariables); % Coefficients for constraints
+b = zeros(N+E+1,1); % Right-hand side for constraints
 lb = zeros(numVariables, 1); % Lower bounds for decision variables
 ub = Inf * ones(numVariables, 1); % Upper bounds for decision variables
 
@@ -109,6 +103,7 @@ end
 
 % Flow balance constraints for nodes
 for n = 1:N
+    tag=tag+1;
     % Ensure flow balance (incoming flow + generation = outgoing flow + demand)
     Aeq = sparse(1, numVariables);
     Aeq(1, n) = 1; % Real demand (d_n)
@@ -116,31 +111,30 @@ for n = 1:N
     
     % Add flow for edges connected to node n (both incoming and outgoing)
     for e = find([CIS.Edge. FromNodeID] == n)'
-        Aeq(1, 3 * N + e) = -1; % Outgoing edge flow
+        Aeq(1, 3 * N + e) = 1; % Outgoing edge flow
     end
     for e = find([CIS.Edge. ToNodeID] == n)'
-        Aeq(1, 3 * N + e) = 1; % Incoming edge flow
+        Aeq(1, 3 * N + e) = -1; % Incoming edge flow
     end
-    b = [b; 0]; % Right-hand side of the flow balance equation
-    A = [A; Aeq]; % Append to the constraint matrix
+    A (tag,:) = Aeq; % Append to the constraint matrix
 end
 
 % Constraints for edges: DC Power Flow for each edge e
 for e = 1:E
+    tag=tag+1;
     Aeq_edge = sparse(1, numVariables);
     state = edgeState(e) * nodeState(CIS.Edge(e). FromNodeID) * nodeState(CIS.Edge(e). ToNodeID);
     Aeq_edge(3 * N + e) = 1; % Real flow of edge e
     Aeq_edge(2 * N + CIS.Edge(e). FromNodeID) = - CIS.Edge(e).Susceptance * state ; % Susceptance of edge e and node phase angles
     Aeq_edge(2 * N + CIS.Edge(e). ToNodeID) = CIS.Edge(e).Susceptance  * state;
-    b = [b; 0]; % Right-hand side: Susceptance * operational state
-    A = [A; Aeq_edge]; % Add constraint to matrix
+    A (tag,:) = Aeq_edge; % Add constraint to matrix
 end
 
 % Reference node phase angle constraint: set phase angle of the reference node to 0
+tag=tag+1;
 Aeq_ref = sparse(1, numVariables);
 Aeq_ref(2 * N + params.RefNode) = 1; % Set the phase angle of reference node to 0
-b = [b; 0]; % Right-hand side is 0
-A = [A; Aeq_ref]; % Append to the constraint matrix
+A (tag,:) =  Aeq_ref; % Append to the constraint matrix
 
 
 %% Step 5: Solve the LP problem using CPLEX
@@ -156,7 +150,7 @@ options.display = 'off';
 % Extract results for nodes and edges
 realDemand = x(1:N);
 realGeneration = x(N+1:2*N);
-realFlow = x(2*N+1:2*N+E);
+realFlow = x(3*N+1:3*N+E);
 
 % Store the results in ComState
 ComState.Node = [[CIS.Node.ID]', realDemand, realGeneration];
@@ -167,8 +161,10 @@ SysFunLoss(2) = sum(realDemand); % Post-disaster demand
 SysFunLoss(3) = sum([ CIS.Node.TargetDemand]); % Pre-disaster target demand
 SysFunLoss(1) = 1 - SysFunLoss(2) / SysFunLoss(3); % Normalized functionality loss
 
-ZoneState(:,1) = [(1:size(TerminalZone,2))'];
-ZoneState(:,2) = mapNodeStatesToZones(CIS, realDemand, TerminalZone,'Flow');
+if nargout > 2
+    ZoneState(:,1) = (1:numel(TerminalZone))';
+    ZoneState(:,2) = mapNodeStatesToZones(CIS, realDemand, TerminalZone,'Flow');
+end
 end
 
 

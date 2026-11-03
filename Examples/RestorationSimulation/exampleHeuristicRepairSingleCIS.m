@@ -2,14 +2,16 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
 
 CIS_Type='power'; %% power | gas | water | road
-Model_Type='Pop'; %% Pop | SDC | LCS | NPC | MF | DCPF
+Model_Type='POP'; %% POP | SDC | LCS | NPC | MF | DCPF
 Sche_Method='GA';  %% GA | SA
 Repair_Crew=1;
 Scenario_ID=1;
@@ -23,55 +25,54 @@ params.ScheMethod =Sche_Method;
 
 %% Load power system data and define damage scenario
 if strcmp(CIS_Type,'power')
-    load(strcat(CasePath,'\Power\PowerSystem.mat'),'PowerSystem');
-    load(strcat(CasePath,'SeismicScenario\PowerComDamgScenarioGivenMaEpID1.mat'),'PowerComDamgScenario');
+    load(fullfile(CasePath, 'Power', 'PowerSystem.mat'),'PowerSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'PowerComDamgScenarioGivenMaEpID1.mat'),'PowerComDamgScenario');
     CIS=PowerSystem;
     ComDamgScenario=PowerComDamgScenario;
     System_type=1;
     
-    if ~ismember(Model_Type, ["Pop","SDC","LCS","NPC","MF","DCPF"])
-        error('Invalid input. Choose from: Pop, SDC, LCS, NPC, MF, DCPF.');
+    if ~ismember(Model_Type, ["POP","SDC","LCS","NPC","MF","DCPF"])
+        error('Invalid input. Choose from: POP, SDC, LCS, NPC, MF, DCPF.');
     end
 end
 
 %% Load gas system data and define damage scenario
 if strcmp(CIS_Type,'gas')
-    load(strcat(CasePath,'\Gas\GasSystem.mat'),'GasSystem');
-    load(strcat(CasePath,'SeismicScenario\GasComDamgScenarioGivenMaEpID1.mat'),'GasComDamgScenario');
+    load(fullfile(CasePath, 'Gas', 'GasSystem.mat'),'GasSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'GasComDamgScenarioGivenMaEpID1.mat'),'GasComDamgScenario');
     CIS=GasSystem;
     ComDamgScenario=GasComDamgScenario;
     System_type=2;
 
-    if ~ismember(Model_Type, ["Pop","SDC","LCS","NPC","MF"])
-        error('Invalid input. Choose from: Pop, SDC, LCS, NPC, MF.');
+    if ~ismember(Model_Type, ["POP","SDC","LCS","NPC","MF"])
+        error('Invalid input. Choose from: POP, SDC, LCS, NPC, MF.');
     end
 end
 
 %% Load water system data and define damage scenario
 if strcmp(CIS_Type,'water')
-    load(strcat(CasePath,'\Water\WaterSystem.mat'),'WaterSystem');
-    load(strcat(CasePath,'SeismicScenario\WaterComDamgScenarioGivenMaEpID1.mat'),'WaterComDamgScenario');
+    load(fullfile(CasePath, 'Water', 'WaterSystem.mat'),'WaterSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'WaterComDamgScenarioGivenMaEpID1.mat'),'WaterComDamgScenario');
     CIS=WaterSystem;
     ComDamgScenario=WaterComDamgScenario;
     System_type=3;
 
 
-    if ~ismember(Model_Type, ["Pop","SDC","LCS","NPC","MF"])
-        error('Invalid input. Choose from: Pop, SDC, LCS, NPC, MF.');
+    if ~ismember(Model_Type, ["POP","SDC","LCS","NPC","MF"])
+        error('Invalid input. Choose from: POP, SDC, LCS, NPC, MF.');
     end
 end
 
 %% Load road system data and define damage scenario
 if strcmp(CIS_Type,'road')
-    load(strcat(CasePath,'\Road\RoadSystem.mat'),'RoadSystem');
-    load(strcat(CasePath,'\Road\RoadSystem.mat'),'RoadSystem');
-    load(strcat(CasePath,'SeismicScenario\RoadComDamgScenarioGivenMaEpID1.mat'),'RoadComDamgScenario');
+    load(fullfile(CasePath, 'Road', 'RoadSystem.mat'),'RoadSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'RoadComDamgScenarioGivenMaEpID1.mat'),'RoadComDamgScenario');
     CIS=RoadSystem;
     ComDamgScenario=RoadComDamgScenario;
     System_type=4;
 
-    if ~ismember(Model_Type, ["Pop","LCS","NPC"])
-        error('Invalid input. Choose from: Pop, LCS, NPC.');
+    if ~ismember(Model_Type, ["POP","LCS","NPC"])
+        error('Invalid input. Choose from: POP, LCS, NPC.');
     end
 end
 %% get component damage scenario
@@ -104,7 +105,9 @@ switch Model_Type
 end
 
 %% display recovery dynamic
-optsDyn = struct('SystemType', CIS_Type);
+optsDyn = struct( ...
+    'SystemType', CIS_Type, 'HideColorbars', false, 'GIFFile', fullfile(ExampleDir, ...
+    sprintf('CIS_Restoration_Heuristic_%s_%s.gif', CIS_Type, Model_Type)));
 mapSingleCISRestorationDynamic(AreaBoundary, CIS, TerminalZone, SysFunsEvo, RepairSeq, ZoneStateEvo, optsDyn);
 
 %% Print results

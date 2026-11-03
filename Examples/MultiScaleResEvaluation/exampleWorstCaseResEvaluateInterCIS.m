@@ -2,20 +2,21 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
 
 %% Set input
-InterCIS_Type='PowerGasWater'; %% PowerGas | PowerWater | PowerGasWater
+InterCIS_Type='PowerGas'; %% PowerGas | PowerWater | PowerGasWater
 Res_Evaluate_Metric='ResLoss'; %%'ResLoss' | 'CritTime' | 'UserGoal'
-Scenario_Num=5;
 
-Attack_Type='NLC'; %% 'LC' | 'NLC'
-Attack_Radius=2; %% Needed when Attack_Type = LC;
-Attack_Budget=2; %% Needed when Attack_Type = NLC;
+Attack_Type='LC'; %% 'LC' | 'NLC'
+Attack_Radius=3; %% Needed when Attack_Type = LC;
+Attack_Budget=3; %% Needed when Attack_Type = NLC;
 Power_Attack_Node_Cost=ones(59,1); %% Needed when Attack_Type = NLC;
 Power_Attack_Edge_Cost=ones(73,1); %% Needed when Attack_Type = NLC;
 Gas_Attack_Node_Cost=ones(16,1); %% Needed when Attack_Type = NLC;
@@ -24,11 +25,13 @@ Water_Attack_Node_Cost=ones(49,1); %% Needed when Attack_Type = NLC;
 Water_Attack_Edge_Cost=ones(71,1); %% Needed when Attack_Type = NLC;
 
 Power_Model_Type='DCPF'; %% MF | DCPF
-Repair_Crew=[1 1 1]; %% [P, G, W] or [P, G] or [P, W]
+Power_Repair_Crew=1;
+Gas_Repair_Crew=1;
+Water_Repair_Crew=1;
 Repair_Strategy = 'Rule'; %% Rule | Heuristic 
 Power_Repair_Rule_Type ='degree'; % Needed when Repair_Strategy = Rule, choose from: degree | betweenness | proximity
-Gas_Repair_Rule_Type ='betweenness'; % Needed when Repair_Strategy = Rule, choose from: degree | betweenness | proximity
-Water_Repair_Rule_Type = 'proximity'; % Needed when Repair_Strategy = Rule, choose from: degree | betweenness | proximity
+Gas_Repair_Rule_Type ='degree'; % Needed when Repair_Strategy = Rule, choose from: degree | betweenness | proximity
+Water_Repair_Rule_Type = 'degree'; % Needed when Repair_Strategy = Rule, choose from: degree | betweenness | proximity
 Sche_Method = 'GA'; %% Needed when Repair_Strategy = Heuristic, chose from: SA | GA 
 % When Retrofit_Strategy = 'Rule':
 Retrofit_Rule_Type = 'proximity';  %% Choose from: degree | betweenness | proximity
@@ -62,8 +65,14 @@ OperatorParams.PowerFunMetric=Power_Model_Type;
 ResEvaParams=struct;
 ResEvaParams.ResMetric=Res_Evaluate_Metric;
 ResEvaParams.PowerFunMetric=Power_Model_Type;
-ResEvaParams.RepairCrew = Repair_Crew;
-ResEvaParams.numSim = Scenario_Num;
+switch InterCIS_Type
+    case 'PowerGas'
+        ResEvaParams.RepairCrew = [Power_Repair_Crew, Gas_Repair_Crew];
+    case 'PowerWater'
+        ResEvaParams.RepairCrew = [Power_Repair_Crew, Water_Repair_Crew];
+    case 'PowerGasWater'
+        ResEvaParams.RepairCrew = [Power_Repair_Crew, Gas_Repair_Crew, Water_Repair_Crew];
+end
 ResEvaParams.RepairStrategy=Repair_Strategy;
 switch Repair_Strategy
     case 'Rule'
@@ -77,9 +86,9 @@ if strcmp(Res_Evaluate_Metric,'CritTime')
     ResEvaParams.CritTimes=Crit_Times;
 end
 
-%%  Load interdependent Power每Gas systems
+%%  Load interdependent Power-Gas systems
 if strcmp(InterCIS_Type,'PowerGas')
-    load(strcat(CasePath,'\Interdependency\PowerGasSystem_PG5_GP1.mat'),'PowerGasSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerGasSystem_PG5_GP1.mat'),'PowerGasSystem');
     PowerSystem=PowerGasSystem.PowerSystem;
     GasSystem=PowerGasSystem.GasSystem;
     PowerGasInterdependency.PowerToGas=PowerGasSystem.PowerToGas;
@@ -91,9 +100,9 @@ if strcmp(InterCIS_Type,'PowerGas')
     end
 end
 
-%%  Load interdependent Power每Water systems
+%%  Load interdependent Power-Water systems
 if strcmp(InterCIS_Type,'PowerWater')
-    load(strcat(CasePath,'\Interdependency\PowerWaterSystem_PW5_WP1.mat'),'PowerWaterSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerWaterSystem_PW5_WP1.mat'),'PowerWaterSystem');
     PowerSystem=PowerWaterSystem.PowerSystem;
     WaterSystem=PowerWaterSystem.WaterSystem;
     PowerWaterInterdependency.PowerToWater=PowerWaterSystem.PowerToWater;
@@ -105,9 +114,9 @@ if strcmp(InterCIS_Type,'PowerWater')
     end
 end
 
-%% Load interdependent Power每Gas每Water systems
+%% Load interdependent Power-Gas-Water systems
 if strcmp(InterCIS_Type,'PowerGasWater')
-    load(strcat(CasePath,'\Interdependency\PowerGasWaterSystem_PG5_GP1_PW5_WP1.mat'),'PowerGasWaterSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerGasWaterSystem_PG5_GP1_PW5_WP1.mat'),'PowerGasWaterSystem');
     PowerSystem=PowerGasWaterSystem.PowerSystem;
     GasSystem=PowerGasWaterSystem.GasSystem;
     WaterSystem=PowerGasWaterSystem.WaterSystem;

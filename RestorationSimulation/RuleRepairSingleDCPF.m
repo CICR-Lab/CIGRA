@@ -3,26 +3,26 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = RuleRepairSingleDCPF(C
 %   Simulates post-disaster restoration for a single infrastructure system
 %   by applying rule-based scheduling to prioritize the repair of damaged
 %   components (nodes/edges). System functionality at each restoration stage
-%   is evaluated using DC power flow model. The function then constructs the 
+%   is evaluated using DC power flow model. The function then constructs the
 %   functionality recovery curve over time and calculates the corresponding resilience loss.
 %   
 %
 % INPUT:
-%   CIS                  : struct of power system information with two arrays, CIS.Node (1℅N) and CIS.Edge (1℅E).
+%   CIS                  : struct of power system information with two arrays, CIS.Node (1 x N) and CIS.Edge (1 x E).
 %                          CIS.Node fields:
-%                          每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%                          每 Voltage, ServiceZone, ClassName, SeismicFragilityType  
+%                          - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%                          - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %                          CIS.Edge fields:
-%                          每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage, 
-%                          每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType  
+%                          - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%                          - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
 %   CISComDamgScenario   : [Ndm x 4] matrix, each row = [DamageType, ComponentID, RepairTime, SysType]
 %                          DamageType: 1=node, 2=edge
 %                          ComponentID: node index (if 1) or edge index (if 2)
-%                          RepairTime: duration to repair this component
+%                          RepairTime: repair duration in the user-defined time unit (days in the Shelby examples)
 %                          SysType: system type code (kept for consistency)
 %   TerminalZone : structure array defining spatial zone divisions. 
 %   params (struct)      : Required fields
-%       .SystemType      : 'power' | 'gas' | 'water' | 'road'
+%       .SystemType      : 'power'
 %       .RepairCrew      : positive integer, number of repair teams
 %       .RuleType        : 'degree' | 'betweenness' | 'proximity' | 'custom'
 %       .RepairOrder     : (required only if RuleType='custom')
@@ -30,14 +30,17 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = RuleRepairSingleDCPF(C
 %                          the execution order over rows of CISComDamgScenario.
 %
 % OUTPUT:
-%   ResLoss     : [1x3] vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
+%   ResLoss     : [1 x 3] vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
+%                 NormalizedResilienceLoss is dimensionless; RealResilience and ExpectedResilience
+%                 use the same time unit as RepairTime.
 %   SysFunsEvo  : [(Ndm+1) x 4] matrix:
 %                 [time, normalized functionality drop, post-disaster functionality, pre-disaster functionality]
 %                 (row 1 is the pre-repair state at time=0)
 %   RepairSeq   : [Ndm x 5] matrix:
 %                 [DamageType, ComponentID, SysType, FinishTime, TeamID]
-%   ZoneStateEvo   : Z℅K numeric matrix of zone states at critical time points
-%                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%                 FinishTime uses the same time unit as RepairTime.
+%   ZoneStateEvo : [Z x (Ndm+2)] matrix: [ZoneID, initial service level,
+%                  service levels after each repair]
 
 %%  Step 1: Validate inputs
 validSystems = {'power'};
@@ -56,26 +59,14 @@ validRuleType = {'degree','betweenness','proximity','custom'};
 if ~isfield(params,'RuleType') || ~ismember(lower(params.RuleType), validRuleType)
     error('Invalid params.RuleType. Choose from: %s', strjoin(validRuleType, ', '));
 end
-RuleType = params.RuleType;
+RuleType = lower(params.RuleType);
 
 % Damage scenario shape (allow empty)
 if ~isempty(CISComDamgScenario) && size(CISComDamgScenario,2) ~= 4
     error('CISComDamgScenario must be an Ndm x 4 matrix: [DamageType, ComponentID, RepairTime, SysType].');
 end
 
-% If custom rule, validate RepairOrder NOW (single supported format)
 Ndm = size(CISComDamgScenario,1);
-if strcmp(RuleType,'custom')
-    if ~isfield(params,'RepairOrder') || isempty(params.RepairOrder)
-        error('RuleType="custom" requires params.RepairOrder (a permutation vector of 1..Ndm).');
-    end
-    if ~isvector(params.RepairOrder) || numel(params.RepairOrder) ~= Ndm
-        error('params.RepairOrder must be a vector of length Ndm.');
-    end
-    if ~isequal(sort(params.RepairOrder(:)), (1:Ndm)')
-        error('params.RepairOrder must be a permutation of 1..Ndm.');
-    end
-end
 
 % Early return for empty damage scenario 
 if Ndm == 0
@@ -87,9 +78,21 @@ if Ndm == 0
     fprintf('[Info] No damaged components detected. No repair scheduling is required.\n');
     return;
 end
+
+% If custom rule, validate RepairOrder NOW (single supported format)
+if strcmp(RuleType,'custom')
+    if ~isfield(params,'RepairOrder') || isempty(params.RepairOrder)
+        error('RuleType="custom" requires params.RepairOrder (a permutation vector of 1..Ndm).');
+    end
+    if ~isvector(params.RepairOrder) || numel(params.RepairOrder) ~= Ndm
+        error('params.RepairOrder must be a vector of length Ndm.');
+    end
+    if ~isequal(sort(params.RepairOrder(:)), (1:Ndm)')
+        error('params.RepairOrder must be a permutation of 1..Ndm.');
+    end
+end
 %%  Step 2: Build graph
 N = numel(CIS.Node);
-E = numel(CIS.Edge);
 
 % Edge list (undirected)
 edge_from = [CIS.Edge.FromNodeID];
@@ -113,12 +116,8 @@ switch RuleType
         res_seq(res_seq(:,1)==2,2) = res_seq(res_seq(:,1)==2,2) - N;
         
     case 'betweenness'
-        network = sparse([edge_from'; edge_to'],[edge_to';edge_from'],1,E,E);
-        [node_bet,E] = betweenness_centrality(network);
-        % compute the betweenness of each edge
-        linear_idx = sub2ind(size(E), edge_from', edge_to');
-        edge_bet = full(E(linear_idx));
-        % Node betweenness + edge betweenness
+        node_bet = centrality(G,'betweenness');
+        edge_bet = (node_bet(edge_from) + node_bet(edge_to))/2;
         comp_score = [node_bet(:); edge_bet(:)];
  
         res_seq(res_seq(:,1)==2,2) = N + res_seq(res_seq(:,1)==2,2);
@@ -169,13 +168,14 @@ function [SysFunsEvo, ResLoss, ZoneStateEvo] = computeRestorationCurveSingleDCPF
 % OUTPUT:
 %    SysFunsEvo -  [time stamps, normalized functionality drop at each
 %                  time, post-disaster functionality at each time, pre-disaster functionality]
-%    ResLoss    -  [NormLoss, RealRes, ExpectedRes]
-%    ZoneStateEvo - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%    ResLoss    -  [NormLoss, RealRes, ExpectedRes]; NormLoss is dimensionless,
+%                  while RealRes and ExpectedRes use the same time unit as RepairTime
+%    ZoneStateEvo - [ZoneID, initial service level, service levels after each repair]
 
 Ndm = size(CISComDamgScenario,1);
 SysFunsEvo = zeros(Ndm+1,4);
 SysFunsEvo(2:end,1) = RepairSeq(:,4);
-ZoneStateEvo = nan(numel(TerminalZone), Ndm+1);
+ZoneStateEvo = nan(numel(TerminalZone), Ndm+2);
 
 [SysFunLoss, ~, ZoneState] = SingleDCPF(CIS, CISComDamgScenario, params, TerminalZone);
 SysFunsEvo(1,2:4) = SysFunLoss;

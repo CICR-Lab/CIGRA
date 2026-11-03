@@ -10,10 +10,6 @@ function convertAreaBoundaryToShapefile()
 %   The function then creates a polygon structure and uses shapewrite to save the
 %   data as a shapefile in the same directory as the input MAT file.
 %
-%   Example:
-%       >> convertAreaBoundaryToShapefile();
-%
-%   See also: shapewrite, uigetfile
 
     % Open a file selection dialog to choose the MAT file
     [filename, pathname] = uigetfile('*.mat', 'Select the MAT file containing AreaBoundary');

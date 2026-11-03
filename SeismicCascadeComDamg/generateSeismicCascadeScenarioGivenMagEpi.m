@@ -1,44 +1,46 @@
 function [SeismicScenario,TerminalZone] = generateSeismicCascadeScenarioGivenMagEpi(TerminalZone, Magnitude, Epicenter)
-% generateSeismicScenarioGivenEpicenter Generates a seismic scenario intensity for an urban area.
+% GENERATESEISMICCASCADESCENARIOGIVENMAGEPI Generates one seismic cascade scenario.
 %
-%   SeismicScenario = generateSeismicScenarioGivenMagEpicenter(TerminalZone, Epicenter, Magnitude)
+%   [SeismicScenario, TerminalZone] = ...
+%       generateSeismicCascadeScenarioGivenMagEpi(TerminalZone, Magnitude, Epicenter)
 %
 %   Inputs:
 %       TerminalZone: Array of structures representing zone divisions, where each element has:
-%           .clon       - (optional) longitude of centroid of zone (if not provided, it is calculated as mean(X))
-%           .clat       - (optional) latitude of centroid of zone (if not provided, it is calculated as mean(Y))
+%           .clon       - (optional) longitude of centroid of zone
+%           .clat       - (optional) latitude of centroid of zone
 %           .X          - [longitude values for each turning point along the boundary of the zone, NaN-terminated]
 %           .Y          - [latitude values for each turning point along the boundary of the zone, NaN-terminated]
+%           .LandslideSus    - landslide-susceptible map-area fraction
+%           .LiquefactionSus - liquefaction-susceptible map-area fraction
+%           .WTD             - water-table depth (m)
+%
+%       Magnitude: Scalar earthquake moment magnitude (e.g., 7.0).
 %
 %       Epicenter: 1x2 vector [longitude, latitude] of the seismic epicenter.
 %
-%       Magnitude: Scalar specifying the seismic magnitude (e.g., 0.3 or 0.8).
-%
 %   Output:
 %       SeismicScenario: Array of structures (one for each zone) with fields:
-%           .PGA                    - Peak Ground Acceleration at the zone (g)
-%           .LateralSpreadingPGD    - PGD due to lateral spreading (cm or appropriate units)
-%           .VerticalSettlementPGD  - PGD due to vertical settlement (cm or appropriate units)
-%           .LandSlidePGD           - PGD associated with landslide hazards (cm or appropriate units)
+%           .ID                     - sequential zone index
+%           .X, .Y                  - copied zone-boundary coordinates
+%           .PGA                    - peak ground acceleration (g)
+%           .PGV                    - peak ground velocity as currently computed (m/s)
+%           .SA10                   - spectral acceleration at 1.0 s (g)
+%           .LateralSpreadingPGD    - lateral-spreading PGD (inches)
+%           .VerticalSettlementPGD  - probability-weighted settlement PGD (inches)
+%           .LandSlidePGD           - landslide PGD (inches)
+%           .LandSlideProb          - landslide-susceptible map-area probability
+%           .LiquefactionProb       - liquefaction probability
+%       TerminalZone: The input zone structure array, returned unchanged.
 %
 %   Procedure:
-%       1. Verify input integrity. If TerminalZone is missing landslide_sus, liquefaction_sus, or wtd, 
-%          update it using integrateLandslideLiquefactionWtdInfo.
+%       1. Verify the inputs and require LandslideSus, LiquefactionSus, and WTD.
 %       2. For each TerminalZone, compute the centroid (using TerminalZone.clon/clat if available;
-%          otherwise, use the mean of X and Y values).
+%          otherwise, use the area centroid of the zone polygon).
 %       3. Compute the distance from the epicenter to the centroid using longitude_latitude.
 %       4. Calculate the PGA at the zone using an empirical formula.
-%       5. Build a PGAsim matrix for all zones and call calculateTerminalZonePGDgivenPGA to compute PGD values.
+%       5. Build one PGA value per zone and call calculateTerminalZonePGDgivenPGA.
 %
-%   Example:
-%       Epicenter = [120.5, 23.8];
-%       Magnitude = 0.8;
-%       SeismicScenario = generateSeismicScenarioGivenEpicenter(TerminalZone, Epicenter, Magnitude);
-%
-%   Author: [Your Name]
-%   Date: [Date]
-
-%% Step 1: Check inputs and update TerminalZone if necessary.
+%% Step 1: Check required inputs and TerminalZone fields.
 if isempty(TerminalZone)
     error('TerminalZone input is empty.');
 end
@@ -49,7 +51,7 @@ if ~exist('Magnitude', 'var') || isempty(Magnitude)
     error('Magnitude value is required.');
 end
 
-% If TerminalZone(1) is missing any of the following fields, update them.
+% The susceptibility and groundwater fields must be integrated beforehand.
 if ~isfield(TerminalZone, 'LandslideSus') || ~isfield(TerminalZone, 'LiquefactionSus') || ~isfield(TerminalZone, 'WTD')
     error('TerminalZone.LiquefactionSus,TerminalZone.LandslideSus and TerminalZone.WTD are all required ');
 end
@@ -62,32 +64,26 @@ SeismicScenario = repmat(struct('PGA',[],'LateralSpreadingPGD',[],'VerticalSettl
 
 for z = 1:numZones
     % Compute zone centroid:
-    if isfield(TerminalZone(z), 'clon') && ~isempty(TerminalZone(z).clon)
+    if isfield(TerminalZone(z), 'clon') && ~isempty(TerminalZone(z).clon) && ...
+            isfield(TerminalZone(z), 'clat') && ~isempty(TerminalZone(z).clat)
         zLon = TerminalZone(z).clon;
-    else
-        validX = TerminalZone(z).X(~isnan(TerminalZone(z).X));
-        zLon = mean(validX);
-    end
-    if isfield(TerminalZone(z), 'clat') && ~isempty(TerminalZone(z).clat)
         zLat = TerminalZone(z).clat;
     else
-        validY = TerminalZone(z).Y(~isnan(TerminalZone(z).Y));
-        zLat = mean(validY);
+        zonePolygon = polyshape(TerminalZone(z).X, TerminalZone(z).Y);
+        [zLon, zLat] = centroid(zonePolygon);
     end
     % Compute distance from epicenter to zone centroid (in km)
     zdist = longitude_latitude(eLon, eLat, zLon, zLat);
     
-    % Calculate PGA using an empirical formula.
-    % NOTE: The provided formula in the draft was ambiguous; here we assume:
-    % PGA = exp(2.20 + 0.81*(Magnitude - 6.0) - 1.27*log(sqrt(zdist^2+9.3^2)) + 0.11*max(log(zdist/100),0) - 0.0021*sqrt(zdist^2+9.3^2))
-    % You may adjust signs or coefficients based on calibration.
-    SeismicScenario(z).PGA = exp(2.20 + 0.81*(Magnitude - 6.0) - 1.27*log(sqrt(zdist^2+9.3^2)) + 0.11*max(log(zdist/100), 0) - 0.0021*sqrt(zdist^2+9.3^2));
-    SeismicScenario(z).PGV = SeismicScenario(z).PGA*9.8*0.75/6.28;
-    SeismicScenario(z).SA10 = SeismicScenario(z).PGA*2.5;
+    % Calculate PGA in g using the Toro et al. model; R_M is in km.
+    R_M = sqrt(zdist^2 + 9.3^2);
+    SeismicScenario(z).PGA = exp(2.20 + 0.81*(Magnitude - 6.0) - 1.27*log(R_M) + 0.11*max(log(R_M/100), 0) - 0.0021*R_M);
+    SeismicScenario(z).PGV = SeismicScenario(z).PGA*9.8*0.75/6.28; % m/s
+    SeismicScenario(z).SA10 = SeismicScenario(z).PGA*2.5;          % g
 end
 
 %% Step 3: Obtain PGD values from a helper function.
-% Build PGAsim matrix: first column is zone ID, second is clon, third is clat, fourth is PGA.
+% Build an N-by-1 PGA array, with one value for each zone.
 PGAsim = [SeismicScenario.PGA]';
 
 % Call helper function to calculate PGD values.

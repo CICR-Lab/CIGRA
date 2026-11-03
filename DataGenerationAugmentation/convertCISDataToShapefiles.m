@@ -1,11 +1,12 @@
 function convertCISDataToShapefiles()
-    % Convert critical infrastructure system data into shapefiles.
+    % Convert complete, single-system infrastructure data into shapefiles.
     % The function:
     %   1. Opens a file selection window to choose the .mat file.
     %   2. Determines the system type based on the file name (or via prompt).
-    %   3. Loads the system data (PowerSystem, WaterSystem or RoadSystem).
+    %   3. Loads PowerSystem, GasSystem, WaterSystem, or RoadSystem.
     %   4. Creates two layers: a point layer for nodes and a line layer for edges.
     %   5. Saves the generated shapefiles in the same folder as the input file.
+    % ServiceZone is not exported as a shapefile attribute.
     
     % Select the .mat file using a dialog window.
     [filename, filepath] = uigetfile('*.mat', 'Select the infrastructure system data file');
@@ -53,8 +54,13 @@ function convertCISDataToShapefiles()
             else
                 error('PowerSystem variable not found in the file.');
             end
-        case {'gas', 'water'}
-            % For both gas and water systems assume the variable is "WaterSystem"
+        case 'gas'
+            if isfield(data, 'GasSystem')
+                systemData = data.GasSystem;
+            else
+                error('GasSystem variable not found in the file.');
+            end
+        case 'water'
             if isfield(data, 'WaterSystem')
                 systemData = data.WaterSystem;
             else
@@ -88,8 +94,6 @@ function convertCISDataToShapefiles()
                 node.MaxGeneration      = systemData.Node(i).MaxGeneration;
                 node.ServedPopulation   = systemData.Node(i).ServedPopulation;
                 node.Voltage            = systemData.Node(i).Voltage;
-                % Convert ServiceZone array to string for shapefile attributes.
-                node.ServiceZone        = mat2str(systemData.Node(i).ServiceZone);
                 node.ClassName          = systemData.Node(i).ClassName;
                 node.SeismicFragilityType = systemData.Node(i).SeismicFragilityType;
                 
@@ -116,7 +120,7 @@ function convertCISDataToShapefiles()
             end
             
         case {'gas', 'water'}
-            % Process WaterSystem (or gas system) data.
+            % GasSystem and WaterSystem share the same exported fields.
             for i = 1:length(systemData.Node)
                 node.Geometry = 'Point';
                 node.X = systemData.Node(i).Longitude;
@@ -128,9 +132,11 @@ function convertCISDataToShapefiles()
                 node.MaxGeneration      = systemData.Node(i).MaxGeneration;
                 node.ServedPopulation   = systemData.Node(i).ServedPopulation;
                 node.Pressure           = systemData.Node(i).Pressure;
-                node.ServiceZone        = mat2str(systemData.Node(i).ServiceZone);
                 node.ClassName          = systemData.Node(i).ClassName;
                 node.SeismicFragilityType = systemData.Node(i).SeismicFragilityType;
+                if isempty(node.SeismicFragilityType)
+                    node.SeismicFragilityType = '';
+                end
                 
                 nodeStruct = [nodeStruct; node];
             end
@@ -142,7 +148,7 @@ function convertCISDataToShapefiles()
                 edge.FromNodeID         = systemData.Edge(i).FromNodeID;
                 edge.ToNodeID           = systemData.Edge(i).ToNodeID;
                 edge.Length             = systemData.Edge(i).Length;
-                edge.RealFlow           = systemData.Edge(i).RealFlow;
+                edge.RealFlow           = full(systemData.Edge(i).RealFlow);
                 edge.Capacity           = systemData.Edge(i).Capacity;
                 edge.Diameter           = systemData.Edge(i).Diameter;
                 edge.ClassName          = systemData.Edge(i).ClassName;
@@ -159,7 +165,6 @@ function convertCISDataToShapefiles()
                 node.Y = systemData.Node(i).Latitude;
                 node.ID                 = systemData.Node(i).ID;
                 node.ServedPopulation   = systemData.Node(i).ServedPopulation;
-                node.ServiceZone        = mat2str(systemData.Node(i).ServiceZone);
                 node.ClassName          = systemData.Node(i).ClassName;
                 node.SeismicFragilityType = systemData.Node(i).SeismicFragilityType;
                 

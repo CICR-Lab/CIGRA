@@ -57,6 +57,7 @@ function convertTerminalZoneToShapefile()
         S(k).X = TerminalZone(k).X;
         S(k).Y = TerminalZone(k).Y;
         % Add additional attributes
+        S(k).ID = TerminalZone(k).ID;
         S(k).Type = TerminalZone(k).Type;
         S(k).Population = TerminalZone(k).Population;
     end

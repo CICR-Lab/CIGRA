@@ -1,46 +1,37 @@
 function WaterComFPs = calculateWaterComSeismicFragility(WaterSystem, SeismicScenario)
-% WaterComSeismicFragility   Computes damage probabilities of water system components
+% calculateWaterComSeismicFragility Computes damage probabilities of water system components
 % under a given seismic scenario.
 %
-%   WaterComFPs = WaterComSeismicFragility(WaterSystem, SeismicScenario)
+%   WaterComFPs = calculateWaterComSeismicFragility(WaterSystem, SeismicScenario)
 %
 %   INPUTS:
 %     WaterSystem: a structure with fields:
-%         NodeData  = [NodeID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, ...
-%                      Longitude, Latitude, ServedPopulation, Pressure]
-%         EdgeData  = [EdgeID, FromNodeID, ToNodeID, Length, RealFlow, MaxFlow, Diameter]
-%         EdgeStr   = structure array for each edge e with:
-%                      .X = [all longitudes for turning points, NaN]
-%                      .Y = [all latitudes for turning points, NaN]
-%         NodeService   = structure array for each node, with field:
-%                      .ZoneSet = [TerminalZoneID, RequiredDemand]
-%         NodeFragility = structure array for each node with field:
-%                      .SeismicType  (code for fragility calculation)
-%         EdgeFragility = structure array for each edge with field:
-%                      .SeismicType  (code for fragility calculation)
-%         (Optionally, WaterSystem.EdgeZone is assumed to be available for edges and should
-%          be a two-column array: [EdgeID, ZoneID].)
+%         .Node(n).Longitude, .Node(n).Latitude
+%         .Node(n).SeismicFragilityType
+%         .Edge(e).Zone = [TerminalZoneID, length within the zone in km]
+%         .Edge(e).SeismicFragilityType = 'Brittle' or 'Ductile'
 %
 %     SeismicScenario: a structure array (per zone) with fields:
 %         .X, .Y            = polygon coordinates (with NaN terminator)
-%         .PGA              = [PGA1, PGA2, ..., PGAm] (scalar or vector)
-%         .PGV              = [PGV1, PGV2, ..., PGVm] (scalar or vector)
+%         .PGA              = [PGA1, PGA2, ..., PGAm] in g
+%         .PGV              = [PGV1, PGV2, ..., PGVm] in m/s
 %         .LiquefactionProb = [Prob1, Prob2, ..., Probm]
 %         .LandSlideProb    = [Prob1, Prob2, ..., Probm]
-%         .LateralSpreadingPGD = [PGD1, PGD2, ..., PGDm]
-%         .VerticalSettlementPGD = [PGD1, PGD2, ..., PGDm]
-%         .LandSlidePGD     = [PGD1, PGD2, ..., PGDm]
+%         .LateralSpreadingPGD = [PGD1, PGD2, ..., PGDm] in inches
+%         .VerticalSettlementPGD = [PGD1, PGD2, ..., PGDm] in inches
+%         .LandSlidePGD     = [PGD1, PGD2, ..., PGDm] in inches
 %
 %   OUTPUT:
 %     WaterComFPs: a structure array indexed by seismic scenario (h) such that:
-%          WaterComFPs(h).Node (n, :) = [slight, moderate, extensive, complete] damage probabilities
-%              for water node n.
-%          WaterComFPs(h).Edge(e).RepairRate = [ZoneID, PGV-induced rate, liquefaction-induced rate, ...
-%                                                landslide-induced rate]
+%          WaterComFPs(h).Node(n).dProb = [slight, moderate, extensive, complete]
+%              mutually exclusive damage-state probabilities for water node n.
+%          WaterComFPs(h).Edge(e).RepairRate rows are
+%              [ZoneID, length in km, PGV-induced rate, liquefaction-induced rate,
+%               landslide-induced rate], where repair rates are in repairs/km.
 %
 %   PROCEDURE:
 %      1. Read seismic fragility parameters for water components from the Excel file
-%         HazusWaterComFragilityParams.xls.
+%         WaterComSeismicFragilityParams.xlsx.
 %         From sheet "GroundShakingFragilityParams": GSFragilityParams(s)
 %         From sheet "GroundFailureFragilityParams": GFFragilityParams(s)
 %         Also, define common fragility parameters:
@@ -48,31 +39,27 @@ function WaterComFPs = calculateWaterComSeismicFragility(WaterSystem, SeismicSce
 %              LSFragilityParams   = [60 1.2]
 %              VSFragilityParams   = [10 1.2]
 %
-%      2. Check that all required input fields exist.
+%      2. Check the fragility and seismic input fields used by this function.
 %
 %      3. For each water node:
-%             - Determine its fragility type from WaterSystem.NodeFragility.
-%             - Locate the node’s seismic zone (using its Longitude and Latitude).
+%             - Determine its fragility type from WaterSystem.Node(n).SeismicFragilityType.
+%             - Locate the node's seismic zone (using its Longitude and Latitude).
 %             - Extract the experienced seismic intensities (nPGA, nLSPGD, nVSPGD, nLandPGD) 
 %               from the corresponding SeismicScenario.
-%             - Compute node damage probabilities due to PGA (using GS fragility parameters)
+%             - Compute node damage-state exceedance probabilities due to PGA (using GS fragility parameters)
 %               and due to PGD-induced ground failures:
 %                   (a) If a matching GF fragility curve exists for the node type, use it.
 %                   (b) Otherwise, use common fragility curves based on LS, VS, and Land parameters.
 %
-%      4. Compute the combined damage probabilities in different damage states (slight,
-%         moderate, extensive, complete).
+%      4. Combine the exceedance probabilities and convert them to mutually exclusive
+%         damage-state probabilities (slight, moderate, extensive, complete).
 %
 %      5. For each water edge:
-%             - Obtain its passing through ZoneIDs from WaterSystem.EdgeZone.
+%             - Obtain the intersected zone IDs and lengths from WaterSystem.Edge(e).Zone.
 %             - For each zone segment, extract the experienced seismic intensities and probabilities.
-%             - Depending on the edge’s fragility type (PWP1 or PWP2), compute:
-%                       ePGV      = 0.0001*PGV^2.25           or scaled by 0.3 for PWP2,
-%                       eLiqPGD   = LiqProb*max(LSPGD,VSPGD)^0.56   (scaled if PWP2),
-%                       eLandPGD  = LandProb*LandPGD^0.56        (scaled if PWP2).
-%             - Store the repair rate vector for each zone segment.
-%
-%   NOTE: This draft uses xlsread and the error function (erf). Adjust indices as needed.
+%             - For brittle pipes, compute ePGV = 0.0001*PGV_cm_s^2.25 and PGD repair rates.
+%               For ductile pipes, multiply these rates by 0.3.
+%             - Store [ZoneID, length, ePGV, eLiqPGD, eLandPGD] for each zone segment.
 
 %% 1. Read Seismic Fragility Parameters from Excel File
 fragFile = 'WaterComSeismicFragilityParams.xlsx';
@@ -83,14 +70,14 @@ nGS = size(rawGS,1) - 1;  % Assumes headers in first row
 for s = 1:nGS
     GSFragilityParams(s).Component   = rawGS{s+1,1};  % Column A
     GSFragilityParams(s).Type          = rawGS{s+1,2};  % Column B
-    GSFragilityParams(s).meanSlight    = rawGS{s+1,4};  % Column D
-    GSFragilityParams(s).stdSlight     = rawGS{s+1,5};  % Column E
-    GSFragilityParams(s).meanModerate  = rawGS{s+1,6};  % Column F
-    GSFragilityParams(s).stdModerate   = rawGS{s+1,7};  % Column G
-    GSFragilityParams(s).meanExtensive = rawGS{s+1,8};  % Column H
-    GSFragilityParams(s).stdExtensive  = rawGS{s+1,9};  % Column I
-    GSFragilityParams(s).meanComplete  = rawGS{s+1,10}; % Column J
-    GSFragilityParams(s).stdComplete   = rawGS{s+1,11}; % Column K
+    GSFragilityParams(s).medianSlight    = rawGS{s+1,4};  % Column D
+    GSFragilityParams(s).betaSlight      = rawGS{s+1,5};  % Column E
+    GSFragilityParams(s).medianModerate  = rawGS{s+1,6};  % Column F
+    GSFragilityParams(s).betaModerate    = rawGS{s+1,7};  % Column G
+    GSFragilityParams(s).medianExtensive = rawGS{s+1,8};  % Column H
+    GSFragilityParams(s).betaExtensive   = rawGS{s+1,9};  % Column I
+    GSFragilityParams(s).medianComplete  = rawGS{s+1,10}; % Column J
+    GSFragilityParams(s).betaComplete    = rawGS{s+1,11}; % Column K
 end
 
 % --- Ground Failure Fragility Params ---
@@ -100,24 +87,24 @@ if nGF>0
     for s = 1:nGF
         GFFragilityParams(s).Component   = rawGF{s+1,1};  % Column A
         GFFragilityParams(s).Type          = rawGF{s+1,2};  % Column B
-        GFFragilityParams(s).meanSlight    = rawGF{s+1,4};  % Column D
-        GFFragilityParams(s).stdSlight     = rawGF{s+1,5};  % Column E
-        GFFragilityParams(s).meanModerate  = rawGF{s+1,6};  % Column F
-        GFFragilityParams(s).stdModerate   = rawGF{s+1,7};  % Column G
-        GFFragilityParams(s).meanExtensive = rawGF{s+1,8};  % Column H
-        GFFragilityParams(s).stdExtensive  = rawGF{s+1,9};  % Column I
-        GFFragilityParams(s).meanComplete  = rawGF{s+1,10}; % Column J
-        GFFragilityParams(s).stdComplete   = rawGF{s+1,11}; % Column K
+        GFFragilityParams(s).medianSlight    = rawGF{s+1,4};  % Column D
+        GFFragilityParams(s).betaSlight      = rawGF{s+1,5};  % Column E
+        GFFragilityParams(s).medianModerate  = rawGF{s+1,6};  % Column F
+        GFFragilityParams(s).betaModerate    = rawGF{s+1,7};  % Column G
+        GFFragilityParams(s).medianExtensive = rawGF{s+1,8};  % Column H
+        GFFragilityParams(s).betaExtensive   = rawGF{s+1,9};  % Column I
+        GFFragilityParams(s).medianComplete  = rawGF{s+1,10}; % Column J
+        GFFragilityParams(s).betaComplete    = rawGF{s+1,11}; % Column K
     end
 else
     GFFragilityParams=[];
 end
 
-% Define common fragility parameters for PGD-induced effects (if a node’s type does not have a
+% Define common fragility parameters for PGD-induced effects (if a node's type does not have a
 % specific GF curve)
-LandFragilityParams = [10 0.5];  % [threshold, dispersion] for landslide PGD
-LSFragilityParams   = [60 1.2];   % [threshold, dispersion] for lateral spreading PGD
-VSFragilityParams   = [10 1.2];   % [threshold, dispersion] for vertical settlement PGD
+LandFragilityParams = [10 0.5];  % [median, beta] for landslide PGD
+LSFragilityParams   = [60 1.2];   % [median, beta] for lateral spreading PGD
+VSFragilityParams   = [10 1.2];   % [median, beta] for vertical settlement PGD
 
 %% 2. Check Input Data Fields
 % Required fields in WaterSystem
@@ -125,7 +112,7 @@ if ~isfield(WaterSystem.Node(1), 'SeismicFragilityType') || ~isfield(WaterSystem
     error('Missing field of Node.SeismicFragilityType or Edge.SeismicFragilityType in WaterSystem');
 end
 
-% Check for optional EdgeZone field (required for edge repair rate calculation)
+% Required zone intersection data for edge repair rate calculation
 if ~isfield(WaterSystem.Edge(1), 'Zone')
     error('WaterSystem.Edge.Zone field is required for water edge repair rate calculations.');
 end
@@ -144,9 +131,13 @@ end
 % Number of seismic intensity realizations
 numScenarios = length(SeismicScenario(1).PGA);
 numNodes = length(WaterSystem.Node);
-zoneLonLat=zeros(length(SeismicScenario),3);%zoneID, zonecentroidLon, zonecentroidLat
+zoneLonLat=zeros(length(SeismicScenario),3); % zoneID, rectangle midpoint longitude, rectangle midpoint latitude
 for z=1:length(SeismicScenario)
-    zoneLonLat(z,:)=[z mean(SeismicScenario(z).X(1:end-1)) mean(SeismicScenario(z).Y(1:end-1))];
+    zoneX = SeismicScenario(z).X;
+    zoneY = SeismicScenario(z).Y;
+    validCoord = isfinite(zoneX) & isfinite(zoneY);
+    zoneLonLat(z,:)=[z (min(zoneX(validCoord))+max(zoneX(validCoord)))/2 ...
+        (min(zoneY(validCoord))+max(zoneY(validCoord)))/2];
 end
 
 % Loop over each scenario
@@ -155,9 +146,7 @@ for h = 1:numScenarios
 
         WaterComFPs(h).Node(n).dProb = zeros(1, 4); % columns: slight, moderate, extensive, complete
 
-        %--- Get node coordinates from WaterSystem.NodeData ---
-        % NodeData columns: [NodeID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
-        %                      Longitude, Latitude, ServedPopulation, Pressure]
+        %--- Get node coordinates ---
         nlon = WaterSystem.Node(n).Longitude;
         nlat = WaterSystem.Node(n).Latitude;
         
@@ -172,31 +161,31 @@ for h = 1:numScenarios
         nLSPGD    = SeismicScenario(nzid).LateralSpreadingPGD(h);
         nVSPGD    = SeismicScenario(nzid).VerticalSettlementPGD(h);
         nLandPGD  = SeismicScenario(nzid).LandSlidePGD(h);
-        LiqProb = SeismicScenario(nzid).LiquefactionProb(h);   % 1 x m
-        LandProb = SeismicScenario(nzid).LandSlideProb(h);      % 1 x m
+        LiqProb = SeismicScenario(nzid).LiquefactionProb(h);
+        LandProb = SeismicScenario(nzid).LandSlideProb(h);
 
 
         %--- Get the node fragility type ---
-        nodeFragilityType = WaterSystem.Node(n).SeismicFragilityType;
+        nodeFragilityType = WaterSystem.Node(n).SeismicFragilityType; 
         
-        %% 3a. Compute node damage probabilities due to PGA (Ground Shaking)
-        idxGS = find(strcmp({GSFragilityParams.Type}, nodeFragilityType), 1);
+        %% 3a. Compute node damage-state exceedance probabilities due to PGA (ground shaking)
+        idxGS = find(strcmp({GSFragilityParams.Type}, nodeFragilityType), 1); 
         if isempty(idxGS)
             % If fragility type not found, assume zero damage from PGA.
             sdPGA = 0; mdPGA = 0; edPGA = 0; cdPGA = 0;
         else
-            fragCoeffs = [ GSFragilityParams(idxGS).meanSlight, GSFragilityParams(idxGS).stdSlight;
-                           GSFragilityParams(idxGS).meanModerate, GSFragilityParams(idxGS).stdModerate;
-                           GSFragilityParams(idxGS).meanExtensive, GSFragilityParams(idxGS).stdExtensive;
-                           GSFragilityParams(idxGS).meanComplete,  GSFragilityParams(idxGS).stdComplete ];
-            % Compute probabilities using lognormal fragility curves
+            fragCoeffs = [ GSFragilityParams(idxGS).medianSlight, GSFragilityParams(idxGS).betaSlight;
+                           GSFragilityParams(idxGS).medianModerate, GSFragilityParams(idxGS).betaModerate;
+                           GSFragilityParams(idxGS).medianExtensive, GSFragilityParams(idxGS).betaExtensive;
+                           GSFragilityParams(idxGS).medianComplete,  GSFragilityParams(idxGS).betaComplete ];
+            % Compute damage-state exceedance probabilities using lognormal fragility curves
             sdPGA = 0.5 + 0.5*erf((log(nPGA) - log(fragCoeffs(1,1))) / (1.4142*fragCoeffs(1,2)));
             mdPGA = 0.5 + 0.5*erf((log(nPGA) - log(fragCoeffs(2,1))) / (1.4142*fragCoeffs(2,2)));
             edPGA = 0.5 + 0.5*erf((log(nPGA) - log(fragCoeffs(3,1))) / (1.4142*fragCoeffs(3,2)));
             cdPGA = 0.5 + 0.5*erf((log(nPGA) - log(fragCoeffs(4,1))) / (1.4142*fragCoeffs(4,2)));
         end
         
-        %% 3b. Compute node damage probabilities due to PGD-induced effects
+        %% 3b. Compute node damage-state exceedance probabilities due to PGD-induced effects
         % First, try to find a GF fragility curve for this node type.
         if ~isempty(GFFragilityParams)
             idxGF = find(strcmp({GFFragilityParams.Type}, nodeFragilityType), 1);
@@ -207,10 +196,10 @@ for h = 1:numScenarios
             % Node has specific PGD-induced fragility parameters.
             % --- Liquefaction-induced ground failures ---
             intensity_Liq = max(nLSPGD, nVSPGD);
-            gfCoeffs = [ GFFragilityParams(idxGF).meanSlight,  GFFragilityParams(idxGF).stdSlight;
-                         GFFragilityParams(idxGF).meanModerate, GFFragilityParams(idxGF).stdModerate;
-                         GFFragilityParams(idxGF).meanExtensive, GFFragilityParams(idxGF).stdExtensive;
-                         GFFragilityParams(idxGF).meanComplete,  GFFragilityParams(idxGF).stdComplete ];
+            gfCoeffs = [ GFFragilityParams(idxGF).medianSlight,  GFFragilityParams(idxGF).betaSlight;
+                         GFFragilityParams(idxGF).medianModerate, GFFragilityParams(idxGF).betaModerate;
+                         GFFragilityParams(idxGF).medianExtensive, GFFragilityParams(idxGF).betaExtensive;
+                         GFFragilityParams(idxGF).medianComplete,  GFFragilityParams(idxGF).betaComplete ];
             sdLiqPGD = 0.5 + 0.5*erf((log(intensity_Liq) - log(gfCoeffs(1,1))) / (1.4142*gfCoeffs(1,2)));
             mdLiqPGD = 0.5 + 0.5*erf((log(intensity_Liq) - log(gfCoeffs(2,1))) / (1.4142*gfCoeffs(2,2)));
             edLiqPGD = 0.5 + 0.5*erf((log(intensity_Liq) - log(gfCoeffs(3,1))) / (1.4142*gfCoeffs(3,2)));
@@ -241,35 +230,34 @@ for h = 1:numScenarios
             temp = (log(nLandPGD) - log(LandFragilityParams(1)))/(1.4142*LandFragilityParams(2));
             dprob = 0.5 + 0.5*erf(temp);
             cdLandPGD = dprob;
-            % Combine common PGD results: Here we assume no damage from liquefaction (sd/md = 0)
-            sdLiqPGD = max(sdLSPGD, sdVSPGD); mdLiqPGD = max(mdLSPGD, mdVSPGD);
+            % Combine common liquefaction-induced PGD exceedance probabilities.
+            sdLiqPGD = max(sdLSPGD, sdVSPGD); 
+            mdLiqPGD = max(mdLSPGD, mdVSPGD);
             edLiqPGD = max(edLSPGD, edVSPGD);
             cdLiqPGD = max(cdLSPGD, cdVSPGD);
-            % For landslide failures (apart from liquefaction) we set:
-          
-            sdLandPGD = cdLandPGD; mdLandPGD = cdLandPGD; edLandPGD = cdLandPGD; % ensure zero aside from complete
+            % Use the same landslide exceedance probability at all damage thresholds.
+            sdLandPGD = cdLandPGD; mdLandPGD = cdLandPGD; edLandPGD = cdLandPGD;
         end
         
         %% 3c. Combine the damage probabilities for node n
-        % Combined damage probabilities (order: slight, moderate, extensive, complete)
+        % Combined damage-state exceedance probabilities.
         slight_damage = sdPGA + sdLiqPGD*LiqProb + sdLandPGD*LandProb - sdPGA*sdLiqPGD*LiqProb - sdPGA*sdLandPGD*LandProb - sdLiqPGD*sdLandPGD*LiqProb*LandProb + sdPGA*sdLiqPGD*sdLandPGD*LiqProb*LandProb;
         moderate_damage = mdPGA + mdLiqPGD*LiqProb + mdLandPGD*LandProb - mdPGA*mdLiqPGD*LiqProb - mdPGA*mdLandPGD*LandProb - mdLiqPGD*mdLandPGD*LiqProb*LandProb + mdPGA*mdLiqPGD*mdLandPGD*LiqProb*LandProb;
         extensive_damage = edPGA + edLiqPGD*LiqProb + edLandPGD*LandProb - edPGA*edLiqPGD*LiqProb - edPGA*edLandPGD*LandProb - edLiqPGD*edLandPGD*LiqProb*LandProb + edPGA*edLiqPGD*edLandPGD*LiqProb*LandProb;
         complete_damage = cdPGA + cdLiqPGD*LiqProb + cdLandPGD*LandProb - cdPGA*cdLiqPGD*LiqProb - cdPGA*cdLandPGD*LandProb - cdLiqPGD*cdLandPGD*LiqProb*LandProb + cdPGA*cdLiqPGD*cdLandPGD*LiqProb*LandProb;
-
-        
+      
         WaterComFPs(h).Node(n).dProb = [slight_damage-moderate_damage, moderate_damage-extensive_damage, extensive_damage-complete_damage, complete_damage];
     end % end node loop
 
     %% 4. Process Water Edges for Repair Rate Estimation
     numEdges = length(WaterSystem.Edge);
     for e = 1:numEdges
-        % Get the set of zone IDs for edge e (using WaterSystem.EdgeZone, assumed as [EdgeID, ZoneID])
+        % Get [ZoneID, length within the zone in km] for edge e.
         zset = WaterSystem.Edge(e).Zone;
         nZones = length(zset(:,1));
-        % Preallocate RepairRate matrix: each row [ZoneID, PGV_rate, LiqPGD_rate, LandPGD_rate]
+        % Preallocate rows as [ZoneID, length, PGV_rate, LiqPGD_rate, LandPGD_rate].
         RepairRateMat = zeros(nZones, 5);
-        % Get edge fragility type from WaterSystem.EdgeFragility
+        % Get edge fragility type.
         edgeType = WaterSystem.Edge(e).SeismicFragilityType;
         for k = 1:nZones
             zoneID = zset(k,1);
@@ -280,18 +268,20 @@ for h = 1:numScenarios
             LandPGD_val = SeismicScenario(zoneID).LandSlidePGD(h);
             LiqProb_val = SeismicScenario(zoneID).LiquefactionProb(h);
             LandProb_val = SeismicScenario(zoneID).LandSlideProb(h);
+            % Hazus repair-rate equations use PGV in cm/s.
+            PGV_cm_per_s = 100 * PGV_val;
             
             % Compute PGV-induced repair rate and PGD-induced repair rates based on edge type
             if strcmpi(edgeType, 'Brittle')
-                r_PGV = 0.0001 * (PGV_val)^2.25;
+                r_PGV = 0.0001 * (PGV_cm_per_s)^2.25;
                 r_LiqPGD = LiqProb_val * (max(LSPGD_val, VSPGD_val))^0.56;
                 r_LandPGD = LandProb_val * (LandPGD_val)^0.56;
             elseif strcmpi(edgeType, 'Ductile')
-                r_PGV = 0.3 * 0.0001 * (PGV_val)^2.25;
+                r_PGV = 0.3 * 0.0001 * (PGV_cm_per_s)^2.25;
                 r_LiqPGD = 0.3 * LiqProb_val * (max(LSPGD_val, VSPGD_val))^0.56;
                 r_LandPGD = 0.3 * LandProb_val * (LandPGD_val)^0.56;
             else
-                % If an unknown type, set repair rates to zero (or handle as needed)
+                % Unknown edge types use zero repair rates.
                 r_PGV = 0;
                 r_LiqPGD = 0;
                 r_LandPGD = 0;

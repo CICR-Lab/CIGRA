@@ -1,4 +1,4 @@
-function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerRepairSeq, GasRepairSeq, WaterRepairSeq...
+function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerRepairSeq, GasRepairSeq, WaterRepairSeq,...
     PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo] = RuleRepairPowerDCPFGasMFWaterMF(PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency,  ...
     PowerWaterInterdependency,PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario,TerminalZone, params)
 % INTRODUCTION:
@@ -12,7 +12,7 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 
 % INPUT:
 %   PowerSystem, GasSystem, WaterSystem:
-%       Each is a struct with fields .Node (1¡ÁN) and .Edge (1¡ÁE).
+%       Each is a struct with fields .Node (1xN) and .Edge (1xE).
 %       - PowerSystem.Node fields include:
 %           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %           Longitude, Latitude, ServedPopulation, Voltage, ServiceZone,
@@ -39,7 +39,7 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 %           .WaterToPower: [WaterNodeID, PowerNodeID, TargetPowerFlow]
 %   TerminalZone : structure array defining spatial zone divisions.
 %   PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario:
-%       Each is an Ndm¡Á4 matrix with rows:
+%       Each is an Ndmx4 matrix with rows:
 %           [DamageType, ComponentID, RepairTime, SysType]
 %         where DamageType = 1 (node) or 2 (edge),
 %               ComponentID = index of node/edge in its system,
@@ -47,7 +47,7 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 %               SysType = 1 (power), 2 (gas), or 3 (water).
 
 %   params (struct), required fields:
-%       .RepairCrew     : [1¡Á3] array specifying the number of repair teams
+%       .RepairCrew     : [1x3] array specifying the number of repair teams
 %                         for power, gas, and water respectively.
 %       .PowerRuleType,
 %       .GasRuleType,
@@ -60,10 +60,10 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 
 % OUTPUT:
 %   PowerResLoss, GasResLoss, WaterResLoss:
-%       Each is a 1¡Á3 vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
+%       Each is a 1x3 vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
 
 %   PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo:
-%       Each is a (K+1)¡Á4 matrix, where K is total completed repairs (all systems combined):
+%       Each is a (K+1)x4 matrix, where K is total completed repairs (all systems combined):
 %           [ time, normalized functionality drop, post-disaster functionality, pre-disaster functionality ]
 
 %   PowerRepairSeq, GasRepairSeq, WaterRepairSeq:
@@ -71,8 +71,8 @@ function [PowerResLoss, GasResLoss, WaterResLoss, PowerSysFunsEvo, GasSysFunsEvo
 %           [DamageType, ComponentID, SysType, FinishTime, TeamID]
 %       filtered by SysType = 1 (power), 2 (gas), or 3 (water) respectively.
 %   PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo:
-%       : Z¡ÁK numeric matrix of zone states at critical time points
-%                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%       Each is a Z x (K+2) matrix:
+%           [ZoneID, initial service level, service levels after each repair]
 
 %%  Step 1: Validate inputs
 % Rule type
@@ -119,8 +119,11 @@ for k = 1:3
     orderName = OrderFields{k};
     S = Scenarios{k};
     Ndm = size(S,1);
+    if Ndm == 0
+        continue
+    end
     if strcmpi(params.(ruleName), 'custom')
-        if ~isfield(params, orderName) || isempty(params.(orderName))
+        if ~isfield(params, orderName) 
             error('params.%s is required because %s="custom".', orderName, ruleName);
         end
         ord = params.(orderName);
@@ -135,19 +138,19 @@ end
 
 %% Step 2: Rank components per rule OR accept custom order
 % set system type
-if strcmpi(params.PowerRuleType, 'custom')
+if strcmpi(params.PowerRuleType, 'custom') && ~isempty(PowerComDamgScenario)
     Power_seq = rankByRuleSingle(PowerSystem, PowerComDamgScenario, params.PowerRuleType, params.PowerRepairOrder);
 else
     Power_seq = rankByRuleSingle(PowerSystem, PowerComDamgScenario, params.PowerRuleType);
 end
 
-if strcmpi(params.GasRuleType, 'custom')
+if strcmpi(params.GasRuleType, 'custom') && ~isempty(GasComDamgScenario)
     Gas_seq = rankByRuleSingle(GasSystem, GasComDamgScenario, params.GasRuleType, params.GasRepairOrder);
 else
     Gas_seq = rankByRuleSingle(GasSystem, GasComDamgScenario, params.GasRuleType);
 end
 
-if strcmpi(params.WaterRuleType, 'custom')
+if strcmpi(params.WaterRuleType, 'custom') && ~isempty(WaterComDamgScenario)
     Water_seq = rankByRuleSingle(WaterSystem, WaterComDamgScenario, params.WaterRuleType, params.WaterRepairOrder);
 else
     Water_seq = rankByRuleSingle(WaterSystem, WaterComDamgScenario, params.WaterRuleType);
@@ -164,7 +167,7 @@ if ~isempty(Integrated_schedule)
     Integrated_schedule = sortrows(Integrated_schedule, 4);
     [PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerResLoss, GasResLoss, WaterResLoss,PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo]...
         = computeRestorationCurvePowerDCPFGasMFWaterMF(Integrated_schedule, PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
-        PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone);
+        PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params);
 else
     PowerResLoss=[0, 0, 0]; GasResLoss=[0, 0, 0]; WaterResLoss=[0, 0, 0];
     [pLoss, gLoss, wLoss,~,~,~,zonePower,zoneGas,zoneWater] = GlobalOptPowerDCPFGasMFWaterMF( PowerSystem, GasSystem, WaterSystem,...
@@ -194,14 +197,13 @@ if isempty(ComDamgScenario)
 end
 
 N = numel(CIS.Node);
-E = numel(CIS.Edge);
 edge_from = [CIS.Edge.FromNodeID];
 edge_to   = [CIS.Edge.ToNodeID];
 G = graph(edge_from, edge_to, [], N);
 
 res_seq = ComDamgScenario;
 
-switch ruleType
+switch lower(ruleType)
     case 'degree'
         deg_nodes = degree(G);
         % Node score: degree; Edge score: average degree of its endpoints
@@ -215,12 +217,8 @@ switch ruleType
         res_seq(res_seq(:,1)==2,2) = res_seq(res_seq(:,1)==2,2) - N;
         
     case 'betweenness'
-        network = sparse([edge_from'; edge_to'],[edge_to';edge_from'],1,E,E);
-        [node_bet,E] = betweenness_centrality(network);
-        % compute the betweenness of each edge
-        linear_idx = sub2ind(size(E), edge_from', edge_to');
-        edge_bet = full(E(linear_idx));
-        % Node betweenness + edge betweenness
+        node_bet = centrality(G,'betweenness');
+        edge_bet = (node_bet(edge_from) + node_bet(edge_to))/2;
         comp_score = [node_bet(:); edge_bet(:)];
         
         res_seq(res_seq(:,1)==2,2) = N + res_seq(res_seq(:,1)==2,2);
@@ -257,7 +255,7 @@ end
 
 function [PowerSysFunsEvo, GasSysFunsEvo, WaterSysFunsEvo, PowerResLoss, GasResLoss, WaterResLoss,PowerZoneStateEvo, GasZoneStateEvo, WaterZoneStateEvo]...
     = computeRestorationCurvePowerDCPFGasMFWaterMF(Integrated_schedule, PowerSystem, GasSystem, WaterSystem, PowerGasInterdependency, PowerWaterInterdependency,...
-    PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone)
+    PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario, TerminalZone, params)
 
 %   Track functionality over an integrated (merged) repair timeline and
 %   compute per-system resilience loss for power/gas/water.
@@ -275,13 +273,12 @@ tline = [0; Integrated_schedule(:,4)];
 PowerSysFunsEvo = zeros(K+1,4); PowerSysFunsEvo(:,1) = tline;
 GasSysFunsEvo   = zeros(K+1,4); GasSysFunsEvo(:,1)   = tline;
 WaterSysFunsEvo = zeros(K+1,4); WaterSysFunsEvo(:,1) = tline;
-PowerZoneStateEvo= nan(numel(TerminalZone), K+1);
-GasZoneStateEvo= nan(numel(TerminalZone), K+1);
-WaterZoneStateEvo= nan(numel(TerminalZone), K+1);
+PowerZoneStateEvo= nan(numel(TerminalZone), K+2);
+GasZoneStateEvo= nan(numel(TerminalZone), K+2);
+WaterZoneStateEvo= nan(numel(TerminalZone), K+2);
 
 % Damage sets
 Damg = {PowerComDamgScenario; GasComDamgScenario; WaterComDamgScenario};
-params=struct();
 [pLoss, gLoss, wLoss,~,~,~,zonePower,zoneGas,zoneWater] = GlobalOptPowerDCPFGasMFWaterMF( ...
     PowerSystem, GasSystem, WaterSystem, ...
     PowerGasInterdependency, PowerWaterInterdependency, ...

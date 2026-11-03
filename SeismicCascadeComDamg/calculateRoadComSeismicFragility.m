@@ -1,90 +1,81 @@
 function RoadComFPs = calculateRoadComSeismicFragility(RoadSystem, SeismicScenario)
-% RoadComSeismicFragility   Computes damage probabilities of road system components 
+% calculateRoadComSeismicFragility   Computes damage probabilities of road system components
 % under a given seismic scenario.
 %
-%   RoadComFPs = RoadComSeismicFragility(RoadSystem, SeismicScenario)
+%   RoadComFPs = calculateRoadComSeismicFragility(RoadSystem, SeismicScenario)
 %
 %   Input:
 %     RoadSystem   -- A structure with fields:
-%           .NodeData         : [NodeID, Longitude, Latitude, ServedPopulation, NodeSeismicFragilityType]
-%           .EdgeData         : [EdgeID, FromNodeID, ToNodeID, Length, HighwayType, MaxSpeed, LineSeismicFragilityType]
-%           .EdgeStr          : a structure array for each edge e with fields:
-%                               .X      - turning point longitudes (with NaN as terminator)
-%                               .Y      - turning point latitudes  (with NaN as terminator)
-%                               .Bridge - logical true/false
-%                               .Tunnel - logical true/false
-%           .NodeService      : structure array for each node with field ZoneSet
-%           .NodeFragility    : structure array with field SeismicType
-%           .EdgeFragility    : structure array with field SeismicType
-%           .EdgeZone         : [EdgeID, ZoneID] for roadway edge zoning (required for roadway components)
+%           .Edge(e).X, .Y                : edge coordinates
+%           .Edge(e).ClassName            : Bridge, Tunnel, or Roadways
+%           .Edge(e).SeismicFragilityType : fragility type code
+%           .Edge(e).Zone                 : roadway zone assignments
 %
 %     SeismicScenario   -- A structure array (per zone) with fields:
 %           .X, .Y             : coordinates of zone boundary (with NaN terminator)
-%           .PGA, SA03, SA06, SA10, PGV, LiquefactionProb, LandSlideProb, ...
-%           .LateralSpreadingPGD, VerticalSettlementPGD, LandSlidePGD
+%           .PGA, .SA10, .LiquefactionProb, .LandSlideProb, ...
+%           .LateralSpreadingPGD, .VerticalSettlementPGD, .LandSlidePGD
 %
 %   Output:
 %     RoadComFPs      -- A structure array (indexed by seismic intensity scenario h)
 %           .Node : (empty, not computed here)
-%           .Edge(e).dProb : [ZoneID, slight_fp, medium_fp, extensive_fp, complete_fp]
+%           .Edge(e).dProb : [ZoneID, slight_fp, moderate_fp, extensive_fp, complete_fp]
 %                         For bridges and tunnels a single row is created while for roadways,
 %                         one row per zone segment is returned.
 %
-%   The function reads fragility parameters from the excel file
-%   HazusRoadComFragilityParams.xls (with two sheets: 
-%   GroundShakingFragilityParams and GroundFailureFragilityParams)
+%   The function reads fragility parameters from the following sheets in
+%   RoadComSeismicFragilityParams.xlsx: GroundShakingFragilityParams and
+%   GroundFailureFragilityParams.
 %   and then proceeds with the following steps:
 %
 %     1. Read fragility parameters.
 %     2. Check that the necessary fields exist in the input data.
 %     3. Loop over each edge and, based on its type (bridge, tunnel, roadway),
 %        compute the damage probabilities under each seismic scenario.
-%     4. For bridges and tunnels, determine the zone from the component’s centroid.
+%     4. For bridges and tunnels, determine the zone from the component's centroid.
 %     5. For roadways, extract the set of zones the edge passes through.
 %
-%   Detailed fragility computations follow the provided formulas using the
-%   error function (erf). A helper function (computeDamage) is used to perform
-%   the common probability calculations.
+%   Fragility probabilities are computed with lognormal cumulative functions.
 
 %% 1. Read Fragility Parameters from Excel File
 gsFilename = 'RoadComSeismicFragilityParams.xlsx';
 
-% Read Ground Shaking Fragility Parameters (assumed to be on rows 2:31)
+% Read Ground Shaking Fragility Parameters
 [~, ~, rawGS] = xlsread(gsFilename, 'GroundShakingFragilityParams');
 nGS = size(rawGS,1) - 1;  % subtract header row
 if nGS>0
     for s = 1:nGS
-        % Columns: A: Component, B: Type, D: meanSlight, E: stdSlight, F: meanModerate, ...
+        % Columns: A: Component, B: Type, D: medianSlight, E: betaSlight, F: medianModerate, ...
         GSFragilityParams(s).Component   = rawGS{s+1,1};  % Column A
         GSFragilityParams(s).Type          = rawGS{s+1,2};  % Column B
-        GSFragilityParams(s).meanSlight    = rawGS{s+1,4};  % Column D
-        GSFragilityParams(s).stdSlight     = rawGS{s+1,5};  % Column E
-        GSFragilityParams(s).meanModerate  = rawGS{s+1,6};  % Column F
-        GSFragilityParams(s).stdModerate   = rawGS{s+1,7};  % Column G
-        GSFragilityParams(s).meanExtensive = rawGS{s+1,8};  % Column H
-        GSFragilityParams(s).stdExtensive  = rawGS{s+1,9};  % Column I
-        GSFragilityParams(s).meanComplete  = rawGS{s+1,10}; % Column J
-        GSFragilityParams(s).stdComplete   = rawGS{s+1,11}; % Column K
+        GSFragilityParams(s).medianSlight    = rawGS{s+1,4};  % Column D
+        GSFragilityParams(s).betaSlight      = rawGS{s+1,5};  % Column E
+        GSFragilityParams(s).medianModerate  = rawGS{s+1,6};  % Column F
+        GSFragilityParams(s).betaModerate    = rawGS{s+1,7};  % Column G
+        GSFragilityParams(s).medianExtensive = rawGS{s+1,8};  % Column H
+        GSFragilityParams(s).betaExtensive   = rawGS{s+1,9};  % Column I
+        GSFragilityParams(s).medianComplete  = rawGS{s+1,10}; % Column J
+        GSFragilityParams(s).betaComplete    = rawGS{s+1,11}; % Column K
     end
 else
     GSFragilityParams=[];
 end
 
-% Read Ground Failure Fragility Parameters (assumed on rows 2:31)
+% Read Ground Failure Fragility Parameters
 [~, ~, rawGF] = xlsread(gsFilename, 'GroundFailureFragilityParams');
 nGF = size(rawGF,1) - 1;  % subtract header row
 if nGF>0
     for s = 1:nGF
         GFFragilityParams(s).Component   = rawGF{s+1,1};  % Column A
         GFFragilityParams(s).Type          = rawGF{s+1,2};  % Column B
-        GFFragilityParams(s).meanSlight    = rawGF{s+1,4};  % Column D
-        GFFragilityParams(s).stdSlight     = rawGF{s+1,5};  % Column E
-        GFFragilityParams(s).meanModerate  = rawGF{s+1,6};  % Column F
-        GFFragilityParams(s).stdModerate   = rawGF{s+1,7};  % Column G
-        GFFragilityParams(s).meanExtensive = rawGF{s+1,8};  % Column H
-        GFFragilityParams(s).stdExtensive  = rawGF{s+1,9};  % Column I
-        GFFragilityParams(s).meanComplete  = rawGF{s+1,10}; % Column J
-        GFFragilityParams(s).stdComplete   = rawGF{s+1,11}; % Column K
+        GFFragilityParams(s).medianSlight    = rawGF{s+1,4};  % Column D
+        GFFragilityParams(s).betaSlight      = rawGF{s+1,5};  % Column E
+        GFFragilityParams(s).medianModerate  = rawGF{s+1,6};  % Column F
+        GFFragilityParams(s).betaModerate    = rawGF{s+1,7};  % Column G
+        GFFragilityParams(s).medianExtensive = rawGF{s+1,8};  % Column H
+        GFFragilityParams(s).betaExtensive   = rawGF{s+1,9};  % Column I
+        GFFragilityParams(s).medianComplete  = rawGF{s+1,10}; % Column J
+        GFFragilityParams(s).betaComplete    = rawGF{s+1,11}; % Column K
     end
 else
     GFFragilityParams=[];
@@ -96,13 +87,13 @@ if  ~isfield(RoadSystem.Edge(1), 'SeismicFragilityType')
     error('Missing field of RoadSystem.Edge.SeismicFragilityType in RoadSystem');
 end
 
-% For roadway damage calculation, check for EdgeZone field
+% For roadway damage calculation, check for the Edge.Zone field
 if ~isfield(RoadSystem.Edge(1), 'Zone')
     warning('Field RoadSystem.Edge(1).Zone is missing. Roadway damage calculations may be incomplete.');
 end
 
 % Required SeismicScenario fields:
-requiredSeisFields = {'X','Y','PGA','SA10','PGV',...
+requiredSeisFields = {'X','Y','PGA','SA10',...
    'LiquefactionProb','LandSlideProb','LateralSpreadingPGD','VerticalSettlementPGD','LandSlidePGD'};
 for i = 1:length(requiredSeisFields)
     if ~isfield(SeismicScenario, requiredSeisFields{i})
@@ -121,19 +112,20 @@ for h = 1:numScenarios
 end
 
 numEdges = length(RoadSystem.Edge);
-zoneLonLat=zeros(length(SeismicScenario),3);%zoneID, zonecentroidLon, zonecentroidLat
+zoneLonLat=zeros(length(SeismicScenario),3); % zoneID, rectangle midpoint longitude, rectangle midpoint latitude
 for z=1:length(SeismicScenario)
-    zoneLonLat(z,:)=[z mean(SeismicScenario(z).X(1:end-1)) mean(SeismicScenario(z).Y(1:end-1))];
+    zoneX = SeismicScenario(z).X;
+    zoneY = SeismicScenario(z).Y;
+    validCoord = isfinite(zoneX) & isfinite(zoneY);
+    zoneLonLat(z,:)=[z (min(zoneX(validCoord))+max(zoneX(validCoord)))/2 ...
+        (min(zoneY(validCoord))+max(zoneY(validCoord)))/2];
 end
 for e = 1:numEdges
-    % Get the fragility type for the current edge from EdgeFragility
+    % Get the fragility type assigned to the current edge.
     edgeFragilityType = RoadSystem.Edge(e).SeismicFragilityType;
     
     % Loop over each seismic intensity scenario
     for h = 1:numScenarios
-
-
-
         if strcmpi(RoadSystem.Edge(e).ClassName,'Bridge')
             %% --- Bridge Processing ---
             % (a) Determine the centroid location of the bridge.
@@ -155,16 +147,16 @@ for e = 1:numEdges
             LandProb = SeismicScenario(ezid).LandSlideProb(h);      % 1 x m
             
             % (d) Compute damage due to ground shaking (using SA10)
-            if ~isempty(GFFragilityParams)
-                idxGS = find(strcmp({GSFragilityParams.Component}, edgeFragilityType), 1);
+            if ~isempty(GSFragilityParams)
+                idxGS = find(strcmp({GSFragilityParams.Type}, edgeFragilityType), 1);
             else
                 idxGS = [];
             end
             if ~isempty(idxGS)
-                fragCoeffs = [ GSFragilityParams(idxGS).meanSlight,    GSFragilityParams(idxGS).stdSlight;
-                    GSFragilityParams(idxGS).meanModerate,  GSFragilityParams(idxGS).stdModerate;
-                    GSFragilityParams(idxGS).meanExtensive, GSFragilityParams(idxGS).stdExtensive;
-                    GSFragilityParams(idxGS).meanComplete,  GSFragilityParams(idxGS).stdComplete ];
+                fragCoeffs = [ GSFragilityParams(idxGS).medianSlight,    GSFragilityParams(idxGS).betaSlight;
+                    GSFragilityParams(idxGS).medianModerate,  GSFragilityParams(idxGS).betaModerate;
+                    GSFragilityParams(idxGS).medianExtensive, GSFragilityParams(idxGS).betaExtensive;
+                    GSFragilityParams(idxGS).medianComplete,  GSFragilityParams(idxGS).betaComplete ];
                 sdSA10 = 0.5 + 0.5*erf((log(intensity_SA10) - log(fragCoeffs(1,1))) / (1.4142*fragCoeffs(1,2)));
                 mdSA10 = 0.5 + 0.5*erf((log(intensity_SA10) - log(fragCoeffs(2,1))) / (1.4142*fragCoeffs(2,2)));
                 edSA10 = 0.5 + 0.5*erf((log(intensity_SA10) - log(fragCoeffs(3,1))) / (1.4142*fragCoeffs(3,2)));
@@ -175,7 +167,7 @@ for e = 1:numEdges
             
             % (e) Compute damage due to liquefaction-induced ground failures.
             if ~isempty(GFFragilityParams)
-                idxGF = find(strcmp({GFFragilityParams.Component}, edgeFragilityType), 1);
+                idxGF = find(strcmp({GFFragilityParams.Type}, edgeFragilityType), 1);
             else
                 idxGF =[];
             end
@@ -183,10 +175,10 @@ for e = 1:numEdges
             intensity_GF_liq = max(intensity_LSPGD, intensity_VSPGD);
             intensity_GF_land = intensity_LandPGD;
             if ~isempty(idxGF)
-                fragilityCoeffs_GF = [ GFFragilityParams(idxGF).meanSlight,    GFFragilityParams(idxGF).stdSlight;
-                    GFFragilityParams(idxGF).meanModerate,  GFFragilityParams(idxGF).stdModerate;
-                    GFFragilityParams(idxGF).meanExtensive, GFFragilityParams(idxGF).stdExtensive;
-                    GFFragilityParams(idxGF).meanComplete,  GFFragilityParams(idxGF).stdComplete ];
+                fragilityCoeffs_GF = [ GFFragilityParams(idxGF).medianSlight,    GFFragilityParams(idxGF).betaSlight;
+                    GFFragilityParams(idxGF).medianModerate,  GFFragilityParams(idxGF).betaModerate;
+                    GFFragilityParams(idxGF).medianExtensive, GFFragilityParams(idxGF).betaExtensive;
+                    GFFragilityParams(idxGF).medianComplete,  GFFragilityParams(idxGF).betaComplete ];
 
                 sdLiqPGD = 0.5 + 0.5*erf((log(intensity_GF_liq) - log(fragilityCoeffs_GF(1,1))) / (1.4142*fragilityCoeffs_GF(1,2)));
                 mdLiqPGD = 0.5 + 0.5*erf((log(intensity_GF_liq) - log(fragilityCoeffs_GF(2,1))) / (1.4142*fragilityCoeffs_GF(2,2)));
@@ -224,13 +216,15 @@ for e = 1:numEdges
                 tempDist=sortrows([zoneLonLat(:,1) abs(zoneLonLat(:,2)-elon)+abs(zoneLonLat(:,3)-elat)],2);ezid=tempDist(1,1);
             end
             
-            % (b) Extract seismic intensities.
+            % (c) Extract seismic intensities and ground-failure probabilities.
             intensity_PGA  = SeismicScenario(ezid).PGA(h);
             intensity_LSPGD = SeismicScenario(ezid).LateralSpreadingPGD(h);
             intensity_VSPGD = SeismicScenario(ezid).VerticalSettlementPGD(h);
             intensity_LandPGD = SeismicScenario(ezid).LandSlidePGD(h);
+            LiqProb = SeismicScenario(ezid).LiquefactionProb(h);
+            LandProb = SeismicScenario(ezid).LandSlideProb(h);
             
-            % (c) Compute ground shaking damage (using PGA) for tunnel.
+            % (d) Compute ground shaking damage (using PGA) for tunnel.
             % Only two fragility parameters are used.
             if ~isempty(GSFragilityParams)
                 idxGS = find(strcmp({GSFragilityParams.Type}, edgeFragilityType), 1);
@@ -239,8 +233,8 @@ for e = 1:numEdges
             end
             if ~isempty(idxGS)
 
-                fragilityCoeffs_tunnel = [ GSFragilityParams(idxGS).meanSlight, GSFragilityParams(idxGS).stdSlight;
-                    GSFragilityParams(idxGS).meanModerate, GSFragilityParams(idxGS).stdModerate ];
+                fragilityCoeffs_tunnel = [ GSFragilityParams(idxGS).medianSlight, GSFragilityParams(idxGS).betaSlight;
+                    GSFragilityParams(idxGS).medianModerate, GSFragilityParams(idxGS).betaModerate ];
 
                 sdPGA = 0.5 + 0.5*erf((log(intensity_PGA) - log(fragilityCoeffs_tunnel(1,1))) / (1.4142*fragilityCoeffs_tunnel(1,2)));
                 mdPGA = 0.5 + 0.5*erf((log(intensity_PGA) - log(fragilityCoeffs_tunnel(2,1))) / (1.4142*fragilityCoeffs_tunnel(2,2)));
@@ -250,17 +244,17 @@ for e = 1:numEdges
                 sdPGA= 0;mdPGA=0;edPGA=0;cdPGA=0;
             end
             
-            % (d) Compute damage due to liquefaction-induced ground failures.
+            % (e) Compute damage due to liquefaction-induced ground failures.
             if ~isempty(GFFragilityParams)
-                idxGF = find(strcmp({GFFragilityParams.Component}, edgeFragilityType), 1);
+                idxGF = find(strcmp({GFFragilityParams.Type}, edgeFragilityType), 1);
             else
                 idxGF = [];
             end
             if ~isempty(idxGF)
-                fragilityCoeffs_GF = [ GFFragilityParams(idxGF).meanSlight,    GFFragilityParams(idxGF).stdSlight;
-                    GFFragilityParams(idxGF).meanModerate,  GFFragilityParams(idxGF).stdModerate;
-                    GFFragilityParams(idxGF).meanExtensive, GFFragilityParams(idxGF).stdExtensive;
-                    GFFragilityParams(idxGF).meanComplete,  GFFragilityParams(idxGF).stdComplete ];
+                fragilityCoeffs_GF = [ GFFragilityParams(idxGF).medianSlight,    GFFragilityParams(idxGF).betaSlight;
+                    GFFragilityParams(idxGF).medianModerate,  GFFragilityParams(idxGF).betaModerate;
+                    GFFragilityParams(idxGF).medianExtensive, GFFragilityParams(idxGF).betaExtensive;
+                    GFFragilityParams(idxGF).medianComplete,  GFFragilityParams(idxGF).betaComplete ];
                 intensity_GF_liq = max(intensity_LSPGD, intensity_VSPGD);
 
                 sdLiqPGD = 0.5 + 0.5*erf((log(intensity_GF_liq) - log(fragilityCoeffs_GF(1,1))) / (1.4142*fragilityCoeffs_GF(1,2)));
@@ -290,7 +284,7 @@ for e = 1:numEdges
             
         else
             %% --- Roadway Processing ---
-            % For roadway edges, use RoadSystem.EdgeZone to obtain the zones the
+            % For roadway edges, use RoadSystem.Edge(e).Zone to obtain the zones the
             % edge passes through.
             if ~isfield(RoadSystem.Edge(1), 'Zone')
                 error('RoadSystem.Edge(1).Zone field is required in RoadSystem for roadway damage calculations.');
@@ -313,16 +307,16 @@ for e = 1:numEdges
 
                     % Use GF fragility parameters for roadway.
                     if ~isempty(GFFragilityParams)
-                        idxGF = find(strcmp({GFFragilityParams.Component}, edgeFragilityType), 1);
+                        idxGF = find(strcmp({GFFragilityParams.Type}, edgeFragilityType), 1);
                     else
                         idxGF = [];
                     end
 
                     if ~isempty(idxGF)
-                        fragilityCoeffs_GF = [ GFFragilityParams(idxGF).meanSlight,    GFFragilityParams(idxGF).stdSlight;
-                            GFFragilityParams(idxGF).meanModerate,  GFFragilityParams(idxGF).stdModerate;
-                            GFFragilityParams(idxGF).meanExtensive, GFFragilityParams(idxGF).stdExtensive;
-                            GFFragilityParams(idxGF).meanComplete,  GFFragilityParams(idxGF).stdComplete ];
+                        fragilityCoeffs_GF = [ GFFragilityParams(idxGF).medianSlight,    GFFragilityParams(idxGF).betaSlight;
+                            GFFragilityParams(idxGF).medianModerate,  GFFragilityParams(idxGF).betaModerate;
+                            GFFragilityParams(idxGF).medianExtensive, GFFragilityParams(idxGF).betaExtensive;
+                            GFFragilityParams(idxGF).medianComplete,  GFFragilityParams(idxGF).betaComplete ];
 
                         sdLiqPGD = 0.5 + 0.5*erf((log(intensity_GF_liq) - log(fragilityCoeffs_GF(1,1))) / (1.4142*fragilityCoeffs_GF(1,2)));
                         mdLiqPGD = 0.5 + 0.5*erf((log(intensity_GF_liq) - log(fragilityCoeffs_GF(2,1))) / (1.4142*fragilityCoeffs_GF(2,2)));

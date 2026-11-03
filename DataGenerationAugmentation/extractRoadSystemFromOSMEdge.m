@@ -1,40 +1,33 @@
 function RoadSystem = extractRoadSystemFromOSMEdge(OSMEdgesSHPFile, RoadSpeed,AreaBoundary,TerminalZone)
-% ExtractRoadSystemFromOSMnxData Extracts a road network from OSM Edge shapefile data.
+% extractRoadSystemFromOSMEdge Extracts a road network from an OSMnx edge shapefile.
 %
-%   RoadSystem = ExtractRoadSystemFromOSMnxData(OSMEdgesSHPFile, AreaBoundary, TerminalZone)
+%   RoadSystem = extractRoadSystemFromOSMEdge(OSMEdgesSHPFile, RoadSpeed, AreaBoundary, TerminalZone)
 %
-%   This function reads the OSMnx‐downloaded road edge shapefile (OSMEdgesSHPFile)
-%   and extracts edges (and their nodes) that lie within the provided AreaBoundary.
-%   It then creates a network structure for a road system with the following fields:
+%   This function reads an OSMnx-exported road edge shapefile and retains
+%   edges with at least one endpoint inside AreaBoundary. It keeps the largest
+%   connected component, removes duplicate edges between the same node pair,
+%   and assigns TerminalZone populations to road nodes.
 %
-%   RoadSystem.NodeData = [NodeID, Longitude, Latitude, ServedPopulation, NodeSeismicFragilityType]
-%   RoadSystem.EdgeData = [EdgeID, FromNodeID, ToNodeID, Length, HighwayType, MaxSpeed, LineSeismicFragilityType]
-%   RoadSystem.EdgeStr  is a structure array with fields:
-%                       .X = [longitude coordinates of edge turning points, NaN]
-%                       .Y = [latitude coordinates of edge turning points, NaN]
-%   RoadSystem.NodeService is a structure array where for each node:
-%                       .ZoneSet = [TerminalZoneID served by that node]
+%   RoadSystem.Node contains ID, Longitude, Latitude, ServedPopulation,
+%   ServiceZone, ClassName, and SeismicFragilityType. ServiceZone stores
+%   TerminalZone array indices.
+%   RoadSystem.Edge contains ID, FromNodeID, ToNodeID, Length, Highway,
+%   MaxSpeed, X, Y, ClassName, and SeismicFragilityType. Length retains the
+%   OSMnx unit of meters, while MaxSpeed is stored in km/h. Edge.Zone is added
+%   separately by identifyEdgeStrPassingZones. SeismicFragilityType is left
+%   empty for the caller to assign.
 %
 %   Inputs:
 %     OSMEdgesSHPFile : Path to the OSMnx road edges shapefile.
+%     RoadSpeed       : Default speed vector in km/h, indexed by highway code.
 %     AreaBoundary    : Structure with fields 'X' and 'Y' that define the study area.
 %     TerminalZone    : Array of structures (zones) with fields:
-%                         .X, .Y  - zone boundary coordinates (with NaN separators),
-%                         .population - population in the zone.
+%                         .X, .Y, and .Population.
 %
 %   Output:
 %     RoadSystem      : Structure containing the road network information.
 %
-%   Note: This function assumes that a helper function road_speed and EdgeComponents
-%         are available in the toolbox.
-%
-%   Example:
-%       RS = ExtractRoadSystemFromOSMnxData('OSMEdges.shp', AreaBoundary, TerminalZone);
-%
-%   Author: [Your Name]
-%   Date: [Date]
   
-
 %% Read OSMnx Edge Data
 osmEdges = shaperead(OSMEdgesSHPFile);
 
@@ -85,10 +78,23 @@ for e = 1:numEdges
             inBoundaryEdges(edgeCount).length = osmEdges(e).length;
         end
         
-        % Extract maxspeed if available
+        % Extract maxspeed and normalize supported numeric units to km/h.
         if isfield(osmEdges(e), 'maxspeed')
             if ischar(osmEdges(e).maxspeed)
-                inBoundaryEdges(edgeCount).maxspeed = str2double(osmEdges(e).maxspeed);
+                speedText = lower(strtrim(osmEdges(e).maxspeed));
+                speedParts = regexp(speedText, '^([0-9]+(?:\.[0-9]+)?)\s*(mph|km/h|kmh|kph|knots)?$', 'tokens', 'once');
+                if isempty(speedParts)
+                    % Unsupported or multi-valued text uses the default road-type speed.
+                    inBoundaryEdges(edgeCount).maxspeed = 0;
+                else
+                    speedValue = str2double(speedParts{1});
+                    if numel(speedParts) > 1 && strcmp(speedParts{2}, 'mph')
+                        speedValue = speedValue * 1.609344;
+                    elseif numel(speedParts) > 1 && strcmp(speedParts{2}, 'knots')
+                        speedValue = speedValue * 1.852;
+                    end
+                    inBoundaryEdges(edgeCount).maxspeed = speedValue;
+                end
             else
                 inBoundaryEdges(edgeCount).maxspeed = osmEdges(e).maxspeed;
             end
@@ -96,7 +102,7 @@ for e = 1:numEdges
             inBoundaryEdges(edgeCount).maxspeed = 0;
         end
         
-        % Also record osmid (if needed)
+        % Read a scalar osmid into the temporary structure when available.
         if isfield(osmEdges(e), 'osmid')
             if ischar(osmEdges(e).osmid)
                 inBoundaryEdges(edgeCount).osmid = str2double(osmEdges(e).osmid);
@@ -120,7 +126,7 @@ for e = 1:numEdges
 end
 
 %% Generate Node and Edge Data Structures
-% Preallocate arrays for node and edge data.
+% Initialize arrays for node and edge data.
 % For nodes: [NodeID, OSM_NodeID, Longitude, Latitude]
 % For edges: [EdgeID, From_Node, To_Node, Length, HighwayType, MaxSpeed]
 nodeData = [];  % will grow dynamically
@@ -152,15 +158,16 @@ for e = 1:numel(inBoundaryEdges)
     tempEdge(4) = currentEdge.length;
     
     % Determine highway type using the highway string.
-    % The following code assigns numeric codes based on highway type keywords.
+    % The following code assigns numeric codes based on highway type tags.
     highwayStr = lower(currentEdge.highway);
+    highwayTypes = regexp(highwayStr, '[a-z_]+', 'match');
     typeCodes = nan(16, 1);typeCodes(16)=16;
-    % Example rules (modify as needed):
-    if contains(highwayStr, 'motorway')
+    % Map OSM highway tags to RoadSpeed indices.
+    if any(strcmp(highwayTypes, 'motorway'))
         typeCodes(1) = 1;
-        if contains(highwayStr, 'motorway_link')
-            typeCodes(7) = 7; % link
-        end
+    end
+    if any(strcmp(highwayTypes, 'motorway_link'))
+        typeCodes(7) = 7; % link
     end
     if contains(highwayStr, 'trunk')
         typeCodes(2) = 2;
@@ -168,11 +175,11 @@ for e = 1:numel(inBoundaryEdges)
     if contains(highwayStr, 'railroad')
         typeCodes(3) = 3;
     end
-    if contains(highwayStr, 'primary')
+    if any(strcmp(highwayTypes, 'primary'))
         typeCodes(4) = 4;
-        if contains(highwayStr, 'primary_link')
-            typeCodes(8) = 8;
-        end 
+    end
+    if any(strcmp(highwayTypes, 'primary_link'))
+        typeCodes(8) = 8;
     end
     if contains(highwayStr, 'secondary')
         typeCodes(5) = 5;
@@ -203,20 +210,20 @@ for e = 1:numel(inBoundaryEdges)
     end
     typeCodes = typeCodes(~isnan(typeCodes));
 
-    % Use the smallest code as the highway type.
+    % Use the smallest candidate code as the initial highway type.
     if ~isempty(typeCodes)
         tempEdge(5) = min(typeCodes);
     else
         tempEdge(5) = NaN;
     end
     
-    % Process maxspeed: if available, use it; otherwise use default from road_speed.
+    % Use the parsed maxspeed when available. Otherwise, use the greatest
+    % default speed among the candidate highway types.
     if ~isempty(currentEdge.maxspeed) && currentEdge.maxspeed > 0
         tempEdge(6) = currentEdge.maxspeed;
     else
-        % road_speed is assumed to return a default speed for given highway types.
         type_speed=sortrows([typeCodes RoadSpeed(typeCodes)],-2);
-        tempEdge(5)= type_speed(1,1);  % returns speed value
+        tempEdge(5)= type_speed(1,1);  % selected highway type
         tempEdge(6) = type_speed(1,2);
     end
     
@@ -246,9 +253,8 @@ end
 edgeData(:,2) = newFromIndices;
 edgeData(:,3) = newToIndices;
 
-%% Optional: Clean the network
+%% Clean the network
 % Remove isolated or duplicate edges/nodes.
-% (Here we use EdgeComponents to keep the largest connected component.)
 [edgeComponent, ~] = EdgeComponents(edgeData, []);
 % Count edges in each component.
 numEdgeComponents = zeros(max(edgeComponent), 2);
@@ -323,8 +329,10 @@ end
 % For zones with no directly located node, assign the nearest node.
 zoneNode = [];
 for k = 1:numel(TerminalZone)
-    zoneCenterLon = mean(TerminalZone(k).X(~isnan(TerminalZone(k).X)));
-    zoneCenterLat = mean(TerminalZone(k).Y(~isnan(TerminalZone(k).Y)));
+    zoneX = TerminalZone(k).X(~isnan(TerminalZone(k).X));
+    zoneY = TerminalZone(k).Y(~isnan(TerminalZone(k).Y));
+    zoneCenterLon = (min(zoneX) + max(zoneX)) / 2;
+    zoneCenterLat = (min(zoneY) + max(zoneY)) / 2;
     % Find nodes already assigned to this zone.
     assignedNodes = nodeZone(nodeZone(:,2) == k, 1);
     if isempty(assignedNodes)
@@ -346,22 +354,19 @@ end
 % Build NodeService structure.
 NodeService = struct;
 for n = 1:numNodes
-    % Each node gets the set of TerminalZone IDs (from zoneNode) that are served.
+    % Each node gets the TerminalZone array indices served by that node.
     zonesServed = zoneNode(zoneNode(:,2)==nodeData(n,1), 1);
     NodeService(n).ZoneSet = zonesServed;
 end
 
 %% Assemble RoadSystem Output Structure
-% For RoadSystem.NodeData, the columns are:
-% [NodeID, Longitude, Latitude, ServedPopulation, NodeSeismicFragilityType]
-% Here, ServedPopulation is taken from the aggregated zoneNode (if available),
-% otherwise set to zero; NodeSeismicFragilityType is set as a placeholder (e.g., 1).
+% Aggregate the populations assigned to each road node.
 nodeServedPop = zeros(numNodes,1);
 for n = 1:numNodes
     % Sum population from zoneNode entries for this node.
     nodeServedPop(n) = sum(zoneNode(zoneNode(:,2)==nodeData(n,1), 3));
 end
-% If no population is assigned, set to 0.
+% Preserve an empty vector when the network contains no nodes.
 if isempty(nodeServedPop)
     nodeServedPop = zeros(numNodes,1);
 end
@@ -388,16 +393,14 @@ for e=1:size(edgeData,1)
     RoadSystem.Edge(e).Y=newEdgeStr(e).Y;
     if newEdgeStr(e).Bridge==1
         RoadSystem.Edge(e).ClassName='Bridge';
-        RoadSystem.Edge(e).SeismicFragilityType='Bridge';
     else
         if newEdgeStr(e).Tunnel==1
             RoadSystem.Edge(e).ClassName='Tunnel';
-            RoadSystem.Edge(e).SeismicFragilityType='Tunnel';
         else
             RoadSystem.Edge(e).ClassName='Roadways';
-            RoadSystem.Edge(e).SeismicFragilityType='Roadways';
         end
     end
+    RoadSystem.Edge(e).SeismicFragilityType='';
 end
 
 end

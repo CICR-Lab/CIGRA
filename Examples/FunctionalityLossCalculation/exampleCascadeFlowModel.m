@@ -2,16 +2,17 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
 
 InterCIS_Type='PowerGasWater'; %% PowerGas | PowerWater | PowerGasWater
-Power_Model_Type='DCPF'; %% MF | DCPF
+Power_Model_Type='MF'; %% MF | DCPF
 Scenario_ID=1;
-
 %% set parameters and initialize
 params=struct;
 
@@ -20,7 +21,7 @@ PowerComState=[];GasComState=[];WaterComState=[];
 PowerZoneState=[];GasZoneState=[]; WaterZoneState=[];
 %% calculate the functionality loss for interdependent power and gas system
 if strcmp(InterCIS_Type,'PowerGas')
-    load(strcat(CasePath,'\Interdependency\PowerGasSystem_PG5_GP1.mat'),'PowerGasSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerGasSystem_PG5_GP1.mat'),'PowerGasSystem');
     InterdependentSystem=PowerGasSystem;
     PowerSystem=PowerGasSystem.PowerSystem;
     GasSystem=PowerGasSystem.GasSystem;
@@ -28,14 +29,13 @@ if strcmp(InterCIS_Type,'PowerGas')
     PowerGasInterdependency.GasToPower=PowerGasSystem.GasToPower;
     
     while ~ismember(Power_Model_Type, ["MF","DCPF"])
-        fprintf('Invalid input. Please set Model_Type as MF, DCPF.\n');
-        break;
+        error('Invalid input. Please set Power_Model_Type as MF or DCPF.');
     end
 end
 
 %% calculate the functionality loss for interdependent power and water system
 if strcmp(InterCIS_Type,'PowerWater')
-    load(strcat(CasePath,'\Interdependency\PowerWaterSystem_PW5_WP1.mat'),'PowerWaterSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerWaterSystem_PW5_WP1.mat'),'PowerWaterSystem');
     InterdependentSystem=PowerWaterSystem;
     PowerSystem=PowerWaterSystem.PowerSystem;
     WaterSystem=PowerWaterSystem.WaterSystem;
@@ -43,14 +43,13 @@ if strcmp(InterCIS_Type,'PowerWater')
     PowerWaterInterdependency.WaterToPower=PowerWaterSystem.WaterToPower;
     
     while ~ismember(Power_Model_Type, ["MF","DCPF"])
-        fprintf('Invalid input. Please set Model_Type as MF, DCPF.\n');
-        break;
+        error('Invalid input. Please set Power_Model_Type as MF or DCPF.');
     end
 end
 
 %% calculate the functionality loss for interdependent power, gas and water system
 if strcmp(InterCIS_Type,'PowerGasWater')
-    load(strcat(CasePath,'\Interdependency\PowerGasWaterSystem_PG5_GP1_PW5_WP1.mat'),'PowerGasWaterSystem');
+    load(fullfile(CasePath, 'Interdependency', 'PowerGasWaterSystem_PG5_GP1_PW5_WP1.mat'),'PowerGasWaterSystem');
     InterdependentSystem=PowerGasWaterSystem;
     PowerSystem=PowerGasWaterSystem.PowerSystem;
     GasSystem=PowerGasWaterSystem.GasSystem;
@@ -62,13 +61,12 @@ if strcmp(InterCIS_Type,'PowerGasWater')
     
     
     while ~ismember(Power_Model_Type, ["MF","DCPF"])
-        fprintf('Invalid input. Please set Model_Type as MF, DCPF.\n');
-        break;
+        error('Invalid input. Please set Power_Model_Type as MF or DCPF.');
     end
 end
 %% get component damage scenario
-% K¡Á2 matrix [component type (1=node,2=edge),component id]
-load(strcat(CasePath,'SeismicScenario\PowerComDamgScenarioGivenMaEpID1.mat'),'PowerComDamgScenario');
+% K x 2 matrix [component type (1=node,2=edge),component id]
+load(fullfile(CasePath, 'SeismicScenario', 'PowerComDamgScenarioGivenMaEpID1.mat'),'PowerComDamgScenario');
 PowerNodeDamgScenario=[]; PowerEdgeDamgScenario=[];
 if ~isempty(PowerComDamgScenario.NodeState)
     ndIdx = find((PowerComDamgScenario.NodeState(:,Scenario_ID)>= 3)&(PowerComDamgScenario.NodeRepairTime(:,Scenario_ID)> 0));
@@ -85,7 +83,7 @@ end
 PowerCISComDamgScenario = [PowerNodeDamgScenario; PowerEdgeDamgScenario];
 
 if contains(InterCIS_Type, "Gas")
-    load(strcat(CasePath,'SeismicScenario\GasComDamgScenarioGivenMaEpID1.mat'),'GasComDamgScenario');
+    load(fullfile(CasePath, 'SeismicScenario', 'GasComDamgScenarioGivenMaEpID1.mat'),'GasComDamgScenario');
     GasNodeDamgScenario=[]; GasEdgeDamgScenario=[];
     if ~isempty(GasComDamgScenario.NodeState)
         ndIdx = find((GasComDamgScenario.NodeState(:,Scenario_ID)>= 3)&(GasComDamgScenario.NodeRepairTime(:,Scenario_ID)> 0));
@@ -103,7 +101,7 @@ if contains(InterCIS_Type, "Gas")
 end
 
 if contains(InterCIS_Type, "Water")
-    load(strcat(CasePath,'SeismicScenario\WaterComDamgScenarioGivenMaEpID1.mat'),'WaterComDamgScenario');
+    load(fullfile(CasePath, 'SeismicScenario', 'WaterComDamgScenarioGivenMaEpID1.mat'),'WaterComDamgScenario');
     WaterNodeDamgScenario=[]; WaterEdgeDamgScenario=[];
     if ~isempty(WaterComDamgScenario.NodeState)
         ndIdx = find((WaterComDamgScenario.NodeState(:,Scenario_ID)>= 3)&(WaterComDamgScenario.NodeRepairTime(:,Scenario_ID)> 0));
@@ -153,10 +151,11 @@ switch InterCIS_Type
         end
 end
 %% display system cascading process
+opts = struct('GifFilename','');
 % display in 2D plane
-mapCascadeProcess2D(AreaBoundary, InterdependentSystem, CascadeTrace, 'Flow');
+mapCascadeProcess2D(AreaBoundary, InterdependentSystem, CascadeTrace, 'Flow', opts);
 % display in 3D plane
-mapCascadeProcess3D(AreaBoundary, InterdependentSystem, CascadeTrace, 'Flow');
+mapCascadeProcess3D(AreaBoundary, InterdependentSystem, CascadeTrace, 'Flow', opts);
 
 %% Print results
 disp('Power System Functionality: [Power System Functionality Drop, Power Post-disaster Functionality, Power Pre-disaster Functionality]:');
@@ -168,7 +167,7 @@ disp(PowerComState.Node);
 disp('Power Edge State: [Power Edge ID, Power Edge Flow]');
 disp(PowerComState.Edge);
 
-disp('Power Zone Service State: [Post-disaster Zone State, Pre-disaster Zone State]');
+disp('Power Zone Service State: [Zone ID, Post-disaster Service State]');
 disp(PowerZoneState);
 
 if contains(InterCIS_Type, "Gas")
@@ -181,7 +180,7 @@ if contains(InterCIS_Type, "Gas")
     disp('Gas Edge State: [Gas Edge ID, Gas Edge Flow]');
     disp(GasComState.Edge);
     
-    disp('Gas Zone Service State: [Post-disaster Zone State, Pre-disaster Zone State]');
+    disp('Gas Zone Service State: [Zone ID, Post-disaster Service State]');
     disp(GasZoneState);
 end
 
@@ -195,6 +194,6 @@ if contains(InterCIS_Type, "Water")
     disp('Water Edge State: [Water Edge ID, Water Edge Flow]');
     disp(WaterComState.Edge);
     
-    disp('Water Zone Service State: [Post-disaster Zone State, Pre-disaster Zone State]');
+    disp('Water Zone Service State: [Zone ID, Post-disaster Service State]');
     disp(WaterZoneState);
 end

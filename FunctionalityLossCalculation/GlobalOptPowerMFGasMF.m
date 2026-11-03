@@ -8,20 +8,20 @@ function [PowerSysFunLoss, GasSysFunLoss, PowerComState, GasComState, PowerZoneS
 %
 % INPUTS:
 %   PowerSystem, GasSystem
-%       struct with two fields, CIS.Node (1℅N) and CIS.Edge (1℅E).
+%       struct with two fields, CIS.Node (1-by-N) and CIS.Edge (1-by-E).
 %       PowerSystem
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Voltage, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage, 
-%             每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType  
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%             - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
 %       GasSystem:
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Pressure, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Pressure, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType  
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
 %
 %   PowerGasInterdependency:
 %       A structure with fields:
@@ -29,7 +29,7 @@ function [PowerSysFunLoss, GasSysFunLoss, PowerComState, GasComState, PowerZoneS
 %           .GasToPower: [GasNodeID, PowerNodeID, ConversionRatio, RealGasFlow, MaxGasFlow]
 %
 %   PowerComDamgScenario, GasComDamgScenario:
-%        K℅2 matrix of damaged components:
+%        K-by-2 matrix of damaged components:
 %        [DamageType (1=node, 2=edge), DamageComponentID]
 %
 %   TerminalZone : structure array defining spatial zone divisions.
@@ -54,7 +54,7 @@ function [PowerSysFunLoss, GasSysFunLoss, PowerComState, GasComState, PowerZoneS
 %     - PowerComState.Edge(:,2): The real flow of the edge after the disaster.
 %
 %   PowerZoneState, GasZoneState:
-%       G℅2 matrix of zone-level functionality states, where G is the maximum zone ID:
+%       G-by-2 matrix of zone-level functionality states, where G is the number of zones:
 %
 %% 1.Indexing & set parameters
 N_p = numel(PowerSystem.Node); N_g = numel(GasSystem.Node);
@@ -96,6 +96,8 @@ isDamgPowerNode = ismember(PowerNodeID, PowerComDamgScenario(PowerComDamgScenari
 isDamgPowerEdge = ismember(PowerEdgeID, PowerComDamgScenario(PowerComDamgScenario(:,1)==2,2));
 isDamgGasNode   = ismember(GasNodeID,  GasComDamgScenario(GasComDamgScenario(:,1)==1,2));
 isDamgGasEdge   = ismember(GasEdgeID,   GasComDamgScenario(GasComDamgScenario(:,1)==2,2));
+isDamgPowerEdge = isDamgPowerEdge | ismember(EdgePowerFrom, PowerNodeID(isDamgPowerNode)) | ismember(EdgePowerTo, PowerNodeID(isDamgPowerNode));
+isDamgGasEdge = isDamgGasEdge | ismember(EdgeGasFrom, GasNodeID(isDamgGasNode)) | ismember(EdgeGasTo, GasNodeID(isDamgGasNode));
 
 % Interdependency relations
 Dpg = PowerGasInterdependency.PowerToGas;
@@ -106,11 +108,15 @@ if ~isempty(Dpg)
     for i=1:size(temp,1)
         PG_Index(Dpg(:,2)==temp(i),2)=i;
     end
+else
+    Dpg=zeros(0,3);NPdg=0;NpdG=0;PG_Index=zeros(0,2);
 end
 
 Cgp = PowerGasInterdependency.GasToPower;
 if ~isempty(Cgp)
     NGcp = size(Cgp,1);
+else
+    Cgp=zeros(0,5);NGcp=0;
 end
 
 % Decision variable block indices
@@ -118,7 +124,7 @@ PowerGenIdx = find(MaxPowerGen~=0); Nsp = numel(PowerGenIdx);
 PowerDemIdx = find(TargetPowerDemand~=0); Ndp = numel(PowerDemIdx);
 GasGenIdx = find(MaxGasGen~=0);   Nsg = numel(GasGenIdx);
 GasDemIdx = find(TargetGasDemand~=0); Ndg = numel(GasDemIdx);
-Npv = E_p+Nsp+Ndp+NPdg+N_p; Nps = NPdg; Npt_t = Npv+Nps;
+Npv = E_p+Nsp+Ndp+NPdg; Nps = NPdg; Npt_t = Npv+Nps;
 Ngv = E_g+Nsg+Ndg+NGcp; Ngs = NpdG; Ngt_t = Ngv+Ngs; Nv = Npt_t+Ngt_t;
 idx_power_flow = 1:E_p;
 idx_power_gen = E_p + (1:Nsp);
@@ -199,7 +205,7 @@ for i=1:size(Aeq5,1)
     Aeq5(i,idx_power_gen(PowerGenIdx==p_nid(i)))=1;
     gidxs=find(Cgp(:,2)==p_nid(i));
     for j=1:length(gidxs)
-        Aeq5(i,idx_gas2power_dem(gidxs))=-Cgp(gidxs(j),3);
+        Aeq5(i,idx_gas2power_dem(gidxs(j)))=-Cgp(gidxs(j),3);
     end
 end
 %% 5. Inequality  constraints
@@ -219,9 +225,11 @@ for i = 1:NpdG
     gcidx = gas_id(i);
     if gcidx > N_g 
         eidx = gcidx - N_g;
+        targetGasDamaged = isDamgGasEdge(eidx);
         tag1=tag1+1; Aineq1(tag1,idx_gasInt_bin(i)) = -EdgeGasCapacity(eidx); Aineq1(tag1,idx_gas_flow(eidx)) = -1; bineq1(tag1)=0;
         tag1=tag1+1; Aineq1(tag1,idx_gasInt_bin(i)) = -EdgeGasCapacity(eidx); Aineq1(tag1,idx_gas_flow(eidx)) = 1; bineq1(tag1)=0;
     else
+        targetGasDamaged = isDamgGasNode(gcidx);
         cedges = find(EdgeGasFrom==gcidx | EdgeGasTo==gcidx);
         for c=1:length(cedges)
             tag1=tag1+1; Aineq1(tag1,idx_gasInt_bin(i))=-EdgeGasCapacity(cedges(c)); Aineq1(tag1,idx_gas_flow(cedges(c)))=-1; bineq1(tag1)=0;
@@ -240,7 +248,7 @@ for i = 1:NpdG
     tag5=tag5+1; Aineq5(tag5,idx_gasInt_bin(i))=-1;
     for s=1:length(temp)
         tag2=tag2+1; Aineq2(tag2,idx_gasInt_bin(i))=1; Aineq2(tag2,idx_power2gas_state(temp(s)))=-1; bineq2(tag2)=0;
-        tag4=tag4+1; Aineq4(tag4,idx_power2gas_state(temp(s)))=1; bineq4(tag4)=1-isDamgGasNode(gcidx);
+        tag4=tag4+1; Aineq4(tag4,idx_power2gas_state(temp(s)))=1; bineq4(tag4)=1-targetGasDamaged;
         Aineq5(tag5,idx_power2gas_state(temp(s)))=1;
     end
     bineq5(tag5)=length(temp)-1;
@@ -294,8 +302,8 @@ GasSysFunLoss = [1-PostGasFun/GT, PostGasFun, GT];
 Interdependency.Dpg=[x(idx_power2gas_state), x(idx_power2gas_dem)];
 Interdependency.Cgp=[x(idx_gas2power_dem)];
 
-PowerZoneState(:,1) = [(1:size(TerminalZone,2))'];
+PowerZoneState(:,1) = (1:numel(TerminalZone))';
 PowerZoneState(:,2) = mapNodeStatesToZones(PowerSystem, PostDisasterPowerDemand, TerminalZone,'Flow');
-GasZoneState(:,1) = [(1:size(TerminalZone,2))'];
+GasZoneState(:,1) = (1:numel(TerminalZone))';
 GasZoneState(:,2) = mapNodeStatesToZones(GasSystem, PostDisasterGasDemand, TerminalZone,'Flow');
 end

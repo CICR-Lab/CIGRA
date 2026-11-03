@@ -6,13 +6,13 @@ function [PowerSysRes, GasSysRes, WaterSysRes, PowerZoneRes, GasZoneRes, WaterZo
 %   seismic scenarios and damage realizations, it simulates repair
 %   processes, reconstructs functionality trajectories, and evaluates
 %   resilience using one of three metrics:
-%        'ResLoss'   ¨C normalized area under (1 - F(t))
-%        'CritTime'  ¨C weighted functionality at specified time points
-%        'UserGoal'  ¨C population-weighted goal satisfaction rate
+%        'ResLoss'   - normalized area under (1 - F(t))
+%        'CritTime'  - weighted functionality at specified time points
+%        'UserGoal'  - population-weighted goal satisfaction rate
 %
 % INPUTS
 %   PowerSystem, GasSystem, WaterSystem:
-%       Each is a struct with fields .Node (1¡ÁN) and .Edge (1¡ÁE).
+%       Each is a struct with fields .Node (1-by-N) and .Edge (1-by-E).
 %       - PowerSystem.Node fields include:
 %           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %           Longitude, Latitude, ServedPopulation, Voltage, ServiceZone,
@@ -36,16 +36,19 @@ function [PowerSysRes, GasSysRes, WaterSysRes, PowerZoneRes, GasZoneRes, WaterZo
 %   PowerWaterInterdependency:
 %       A struct with fields:
 %           .PowerToWater: [PowerNodeID, WaterNodeID, TargetPowerFlow]
-%           .WaterToPower: [WaterNodeID, PowerNodeID, TargetPowerFlow]
+%           .WaterToPower: [WaterNodeID, PowerNodeID, RequiredWaterDemand_m3_per_h]
 %
-%  SeismicScenario: Structure array for zones with fields:
+%   SeismicScenario: 1-by-Z struct array describing one or more aligned seismic
+%                      hazard-field realizations across all zones. Only the first
+%                      realization is evaluated. Required fields:
 %                        .X, .Y                 - Boundary coordinates (NaN-terminated)
-%                        .PGA                   - [PGA1, PGA2, ¡­, PGAm] (scalar or vector) for the zone
-%                        .LiquefactionProb      - [Prob1, Prob2, ¡­, Probm] for the zone
-%                        .LandSlideProb         - [Prob1, Prob2, ¡­, Probm] for the zone
-%                        .LateralSpreadingPGD   - [PGD1, ¡­, PGDm] for the zone
-%                        .VerticalSettlementPGD - [PGD1, ¡­, PGDm] for the zone
-%                        .LandSlidePGD          - [PGD1, ¡­, PGDm] for the zone
+%                        .PGA                   - Peak ground acceleration, in g
+%                        .PGV                   - Peak ground velocity, in m/s
+%                        .LiquefactionProb      - Liquefaction probability
+%                        .LandSlideProb         - Landslide probability
+%                        .LateralSpreadingPGD   - Lateral-spreading displacement, in inches
+%                        .VerticalSettlementPGD - Vertical-settlement displacement, in inches
+%                        .LandSlidePGD          - Landslide displacement, in inches
 %
 %   TerminalZone     : 1xZ struct array describing zones/grids.
 %                      Required fields:
@@ -55,12 +58,18 @@ function [PowerSysRes, GasSysRes, WaterSysRes, PowerZoneRes, GasZoneRes, WaterZo
 %                        .ResMetric      : 'ResLoss' | 'CritTime' | 'UserGoal'
 %                        .RepairStrategy : 'Rule' | 'Heuristic'
 %                        .PowerFunMetric : 'MF' | 'DCPF'
-%                        .numSim         : positive integer (Monte Carlo trials)
+%                        .numSim         : positive integer; number of component-damage
+%                                          and repair-time Monte Carlo realizations
+%                                          under the first seismic hazard-field realization
+%                        .RepairCrew     : 1x3 positive integer array [power, gas, water]
 %                      For CritTime:
-%                        .CritTimes      : vector of checkpoints (default [0,3,7,30,90])
+%                        .CritTimes      : vector of checkpoints in days (default [0,3,7,30,90])
 %                        .CritWeights    : same length as CritTimes; will be normalized to sum=1
-%                      Strategy-specific:
-%                        .PowerRuleType, .GasRuleType,.WaterRuleType / .ScheMethod, etc., as required by your subroutines
+%                      For RepairStrategy = 'Rule':
+%                        .PowerRuleType, .GasRuleType, .WaterRuleType:
+%                                          'degree' | 'betweenness' | 'proximity'
+%                      For RepairStrategy = 'Heuristic':
+%                        .ScheMethod     : 'SA' | 'GA'
 %
 %   PowerResilienceGoal, GasResilienceGoal, WaterResilienceGoal:
 %                      (Only when ResMetric = 'UserGoal') numeric vector of length Z (>=0),
@@ -68,7 +77,7 @@ function [PowerSysRes, GasSysRes, WaterSysRes, PowerZoneRes, GasZoneRes, WaterZo
 %
 % OUTPUTS
 %   PowerSysRes, GasSysRes, WaterSysRes:
-%                      scalar for 'ResLoss', 'CritTime', and 'UserGoal' ¡ª the mean across simulations.
+%                      scalar for 'ResLoss', 'CritTime', and 'UserGoal' - the mean across simulations.
 %                      (For 'ResLoss': mean normalized loss; for 'CritTime': mean weighted functionality;
 %                       for 'UserGoal': mean population-weighted goal satisfaction.)
 %
@@ -111,10 +120,10 @@ if ~ismember(params.ResMetric, validResMetrics)
 end
 switch params.ResMetric
     case 'UserGoal'
-        % Both goals must be provided as zone-length vectors
+        % All three goals must be provided as zone-length vectors
         if ~(nargin >= 11 && exist('PowerResilienceGoal','var') && ~isempty(PowerResilienceGoal) && exist('GasResilienceGoal','var') ...
                 && ~isempty(GasResilienceGoal) && exist('WaterResilienceGoal','var') && ~isempty(WaterResilienceGoal))
-            error('ResMetric=UserGoal requires PowerResilienceGoal, GasResilienceGoal and WaterResilienceGoal (both zone-length vectors).');
+            error('ResMetric=UserGoal requires PowerResilienceGoal, GasResilienceGoal and WaterResilienceGoal (all three zone-length vectors).');
         end
         Z = numel(TerminalZone);
         Z = numel(TerminalZone);
@@ -130,16 +139,32 @@ switch params.ResMetric
             end
         end
     case 'CritTime'
-        if ~isfield(params,'CritTimes') || isempty(params.CritTimes) || ~isnumeric(params.CritTimes)
+        if ~isfield(params,'CritTimes') || isempty(params.CritTimes)
             params.CritTimes = [0, 3, 7, 30, 90];
         end
+        validateattributes(params.CritTimes, {'numeric'}, ...
+            {'real','vector','finite','nonnegative'}, mfilename, 'params.CritTimes');
         if ~isfield(params,'CritWeights') || isempty(params.CritWeights)
             params.CritWeights = ones(size(params.CritTimes));
-        elseif numel(params.CritWeights) ~= numel(params.CritTimes)
-            error('params.CritWeights must have the same length as params.CritTimes.');
+        end
+        validateattributes(params.CritWeights, {'numeric'}, ...
+            {'real','vector','finite','nonnegative','numel',numel(params.CritTimes)}, ...
+            mfilename, 'params.CritWeights');
+        if ~any(params.CritWeights)
+            error('params.CritWeights must contain at least one positive value.');
         end
         % normalize weights to sum = 1
         params.CritWeights = params.CritWeights(:) / sum(params.CritWeights(:));
+end
+
+if ~exist('PowerResilienceGoal','var')
+    PowerResilienceGoal = [];
+end
+if ~exist('GasResilienceGoal','var')
+    GasResilienceGoal = [];
+end
+if ~exist('WaterResilienceGoal','var')
+    WaterResilienceGoal = [];
 end
 
 % Repair strategy checks
@@ -177,15 +202,15 @@ end
 %% Step 2: generate component damage scenario
 % Power component damage scenario
 PowerComFPs = calculatePowerComSeismicFragility(PowerSystem, SeismicScenario);
-PowerComDamgScenario = generatePowerComSeismicDamgScenario(PowerSystem, PowerComFPs, params.numSim);
+PowerComDamgScenario = generatePowerComSeismicDamgScenario(PowerSystem, PowerComFPs(1), params.numSim);
 
 % Gas component damage scenario
 GasComFPs = calculateGasComSeismicFragility(GasSystem,SeismicScenario);
-GasComDamgScenario = generateGasComSeismicDamgScenario(GasSystem, GasComFPs, params.numSim);
+GasComDamgScenario = generateGasComSeismicDamgScenario(GasSystem, GasComFPs(1), params.numSim);
 
 % Water component damage scenario
 WaterComFPs = calculateWaterComSeismicFragility(WaterSystem, SeismicScenario);
-WaterComDamgScenario = generateWaterComSeismicDamgScenario(WaterSystem, WaterComFPs, params.numSim);
+WaterComDamgScenario = generateWaterComSeismicDamgScenario(WaterSystem, WaterComFPs(1), params.numSim);
 
 %% Step 3: get repair curve
 PowerSysFunsEvoAll      = cell(params.numSim,1);  % System functionality evolution
@@ -306,16 +331,17 @@ function [SysRes, ZoneRes] = SeismicResilienceEvaluation( ...
 %
 % INPUTS
 %   params            : struct (uses .ResMetric, .CritTimes, .CritWeights, .numSim)
-%   SysFunsEvoAll     : cell{numSim,1}, each [T¡Á2] (col1=time, col2=functionality LOSS)
-%   ZoneStateEvoAll   : cell{numSim,1}, each [Z¡Á(1+M)] (col1=ZoneID, others=zone functionality)
-%   TimeAxisAll       : cell{numSim,1}, each [M¡Á1] time vector matching ZoneStateEvoAll columns 2..end
-%   SysResLossAll     : cell{numSim,1}, each [1¡Á3] = [normLoss, realRes, targetRes] (only for 'ResLoss')
-%   TerminalZone      : 1¡ÁZ struct array (uses .Population for 'UserGoal' weighting)
-%   ResilienceGoal    : [Z¡Á1] zone goals (only for 'UserGoal')
+%   SysFunsEvoAll     : cell{numSim,1}, each [T-by-4]: [time, normalized functionality
+%                       drop, post-disaster functionality, pre-disaster functionality]
+%   ZoneStateEvoAll   : cell{numSim,1}, each [Z-by-(1+M)] (col1=ZoneID, others=zone functionality)
+%   TimeAxisAll       : cell{numSim,1}, each [M-by-1] time vector matching ZoneStateEvoAll columns 2..end
+%   SysResLossAll     : cell{numSim,1}, each [1-by-3] = [normLoss, realRes, targetRes] (only for 'ResLoss')
+%   TerminalZone      : 1-by-Z struct array (uses .Population for 'UserGoal' weighting)
+%   ResilienceGoal    : [Z-by-1] zone goals (only for 'UserGoal')
 %
 % OUTPUTS
 %   SysRes            : scalar (mean across simulations)
-%   ZoneRes           : [Z¡Á2] = [ZoneID, mean across simulations]
+%   ZoneRes           : [Z-by-2] = [ZoneID, mean across simulations]
 
 Z  = numel(TerminalZone);
 
@@ -385,8 +411,8 @@ switch params.ResMetric
             
             for z = 1:Z
                 gz = ZM(z,2:end).';
-                idx = find(round(gz) >= 1, 1, 'first');
-                sat_i(z) = double(t (idx) <= ResilienceGoal(z));
+                idx = find(gz >= 1 - 1e-9, 1, 'first');
+                sat_i(z) = ~isempty(idx) && t(idx) <= ResilienceGoal(z);
             end
             
             SatZone_all(i,:) = sat_i.';

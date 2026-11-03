@@ -1,57 +1,56 @@
 function GasSystem = generateGasSystemFlowInfo(GasSystem, TerminalZone, params)
-% generateGasSystemFlowInfo Generates the flow and physical properties for a city gas supply system.
+% generateGasSystemFlowInfo Adds demand, capacity, and maximum-flow results
+% to a natural gas system topology.
 %
 %   GasSystem = generateGasSystemFlowInfo(GasSystem, TerminalZone, params)
 %
-%   Inputs:
-%       GasSystem: A structure with fields (both input and output):
-%           Node: Structure array with fields:
-%               ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
-%               Longitude, Latitude, ServedPopulation, Pressure,
-%               ServiceZone (e.g., [TerminalZoneID, RequiredDemand]),
-%               ClassName, SeismicFragilityType.
+% Inputs:
+%   GasSystem.Node required fields:
+%       ID, Longitude, and Latitude.
+%       ClassName is needed to identify source nodes. A node is treated as
+%       a source when ClassName contains Gate, Well, or Source.
 %
-%           Edge: Structure array with fields:
-%               ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter,
-%               X (vector of longitudes, NaN terminated), Y (vector of latitudes, NaN terminated),
-%               ClassName, SeismicFragilityType.
+%   GasSystem.Edge required fields:
+%       ID, FromNodeID, ToNodeID, Length (km), X, and Y.
+%       Diameter is optional. A missing, empty, or nonpositive Diameter is
+%       replaced by params.diameter.
 %
-%       TerminalZone: Structure array with fields:
-%               X, Y (boundary coordinates), Type, and Population.
+%   TerminalZone required fields:
+%       ID, X, Y, and Population. Optional clon and clat fields are used as
+%       the zone center when available; otherwise the mean boundary
+%       coordinates are used. ServiceZone stores TerminalZone array indices.
 %
-%       params: Structure with parameters including:
-%               params.demandFactor: (m³/h per person; default 0.1 if missing)
-%               params.gateMargin: Plant margin factor over demand (default 1.2)
-%               params.diameter: Default pipeline diameter if missing (e.g., 300 mm)
+%   params fields:
+%       demandFactor - Gas demand in m^3/h per person. Default: 0.1.
+%       gateMargin   - Source capacity reserve factor. Default: 1.2.
+%       diameter     - Default pipeline diameter in mm. Default: 400.
 %
-%   The function performs the following:
-%     1. Checks that basic required fields exist in GasSystem; if missing, reports error.
-%     2. Assigns each pipeline’s capacity according to its Diameter using the pipe table.
-%     3. Assigns each TerminalZone to its nearest GasSystem node so that the node’s demand is computed:
-%           Required demand = (TerminalZone.Population * demandFactor)
-%        and updates GasSystem.Node.ServiceZone, RealDemand, and TargetDemand accordingly.
-%     4. Identifies source nodes, defined as those whose ClassName includes 'Gate', 'Well', or 'Source'.
-%        Computes for each source node a capacity coefficient gc(n) based on the widest attached pipe.
-%        Then, sets:
-%           RealGeneration(n) = gc(n) * total_demand / (sum of gc for all source nodes)
-%           MaxGeneration(n) = RealGeneration(n) * gateMargin.
-%     5. Constructs a directed graph from the network (using Edge.Capacity) and runs a maxflow
-%        algorithm to compute RealFlow, adjusting edge capacities incrementally until the flow matches demand.
+% Method:
+%   1. Estimate pipe capacity from the nearest Diameter entry in the lookup
+%      table.
+%   2. Assign each TerminalZone to its nearest gas node and calculate demand
+%      as Population * demandFactor.
+%   3. Allocate initial RealGeneration among source nodes in proportion to
+%      the largest pipe capacity attached to each source, and calculate
+%      MaxGeneration using gateMargin.
+%   4. Represent each pipe by two directed arcs and solve a maximum-flow
+%      problem. If total flow is below total demand, the current algorithm
+%      increases every pipe capacity by 20 percent and repeats. The final
+%      super-source flows are written back to source-node RealGeneration.
+%   5. Identify the TerminalZones crossed by each pipe.
 %
-%   Output:
-%       GasSystem is updated with new fields:
-%           For each Edge: RealFlow and possibly revised Capacity.
-%           For each Node: RealDemand, TargetDemand, RealGeneration, and MaxGeneration.
-%
-%   Author: [Your Name]
-%   Date: [Date]
+% Output:
+%   GasSystem with Node fields RealDemand, TargetDemand, RealGeneration,
+%   and MaxGeneration in m^3/h, plus ServedPopulation, ServiceZone, and
+%   Pressure. Edge Diameter is in mm; Capacity and RealFlow are in m^3/h.
+%   Pressure is initialized to zero when absent.
 
 %% Step 0: Set Default Parameters and Check Basic Fields
 if ~isfield(params, 'demandFactor') || isempty(params.demandFactor)
-    params.demandFactor = 0.1; % m³/h per person
+    params.demandFactor = 0.1; % m^3/h per person
 end
 if ~isfield(params, 'gateMargin') || isempty(params.gateMargin)
-    params.gateMargin = 1.5;
+    params.gateMargin = 1.2;
 end
 if ~isfield(params, 'diameter') || isempty(params.diameter)
     params.diameter = 400; % mm default
@@ -67,8 +66,8 @@ for i = 1:length(GasSystem.Node)
     end
 end
 
-% Check basic required fields in GasSystem.Edge.
-requiredEdgeFields = {'ID', 'FromNodeID', 'ToNodeID', 'Length', 'Diameter', 'X', 'Y'};
+% Check basic required fields in GasSystem.Edge. Diameter is optional.
+requiredEdgeFields = {'ID', 'FromNodeID', 'ToNodeID', 'Length', 'X', 'Y'};
 for i = 1:length(GasSystem.Edge)
     for f = requiredEdgeFields
         if ~isfield(GasSystem.Edge(i), f{1}) || isempty(GasSystem.Edge(i).(f{1}))
@@ -77,14 +76,14 @@ for i = 1:length(GasSystem.Edge)
     end
 end
 
-% For other fields, set defaults if missing.
+% Reset fields recalculated from TerminalZone in this function.
 for i = 1:length(GasSystem.Node)
-    if ~isfield(GasSystem.Node(i), 'RealDemand') || isempty(GasSystem.Node(i).RealDemand)
-        GasSystem.Node(i).RealDemand = 0;
-    end
-    if ~isfield(GasSystem.Node(i), 'TargetDemand') || isempty(GasSystem.Node(i).TargetDemand)
-        GasSystem.Node(i).TargetDemand = 0;
-    end
+    GasSystem.Node(i).RealDemand = 0;
+    GasSystem.Node(i).TargetDemand = 0;
+    GasSystem.Node(i).ServiceZone = [];
+    GasSystem.Node(i).ServedPopulation = 0;
+
+    % Set other fields to defaults if missing.
     if ~isfield(GasSystem.Node(i), 'RealGeneration') || isempty(GasSystem.Node(i).RealGeneration)
         GasSystem.Node(i).RealGeneration = 0;
     end
@@ -94,10 +93,6 @@ for i = 1:length(GasSystem.Node)
     if ~isfield(GasSystem.Node(i), 'Pressure') || isempty(GasSystem.Node(i).Pressure)
         GasSystem.Node(i).Pressure = 0;
     end
-    if ~isfield(GasSystem.Node(i), 'ServiceZone') || isempty(GasSystem.Node(i).ServiceZone)
-        GasSystem.Node(i).ServiceZone = [];
-    end
-    GasSystem.Node(i).ServedPopulation=0;
 end
 
 for i = 1:length(GasSystem.Edge)
@@ -129,13 +124,15 @@ pipeTable = [50,    100;
 
 %% Step 2: Assign Capacity to Each Gas Pipeline Edge Based on Its Diameter
 for e = 1:length(GasSystem.Edge)
-    % Retrieve the diameter for the edge.
-    d = GasSystem.Edge(e).Diameter;
-    if isempty(d) || d <= 0
-        d = params.diameter; % use default if missing or invalid
+    % Use the default diameter when the input is missing or invalid.
+    if ~isfield(GasSystem.Edge(e), 'Diameter') || ...
+            isempty(GasSystem.Edge(e).Diameter) || GasSystem.Edge(e).Diameter <= 0
+        d = params.diameter;
         GasSystem.Edge(e).Diameter = d;
+    else
+        d = GasSystem.Edge(e).Diameter;
     end
-    % Look up the capacity in the table: find the row with voltage closest to d.
+    % Find the table row whose diameter is closest to d.
     diffTable = abs(pipeTable(:,1) - d);
     [~, idx] = min(diffTable);
     GasSystem.Edge(e).Capacity = pipeTable(idx, 2);
@@ -147,21 +144,19 @@ numZones = length(TerminalZone);
 % If TerminalZone contains explicit centroid fields, use them; otherwise compute from boundary.
 zoneCentroids = zeros(numZones,2);
 zoneDemand = zeros(numZones,1);
-if ~isfield(params, 'demandFactor') || isempty(params.demandFactor)
-    params.demandFactor = 0.1; % m^3/h per person default
-end
 for z = 1:numZones
-    if isfield(TerminalZone(z), 'clon') && ~isempty(TerminalZone(z).clon)
-        zoneCentroids(z,1) = TerminalZone(z).clon;
+    % Use an explicit center when available; otherwise average unique vertices.
+    if isfield(TerminalZone(z), 'clon') && ~isempty(TerminalZone(z).clon) && ...
+            isfield(TerminalZone(z), 'clat') && ~isempty(TerminalZone(z).clat)
+        zoneCentroids(z,:) = [TerminalZone(z).clon, TerminalZone(z).clat];
     else
         validX = TerminalZone(z).X(~isnan(TerminalZone(z).X));
-        zoneCentroids(z,1) = mean(validX);
-    end
-    if isfield(TerminalZone(z), 'clat') && ~isempty(TerminalZone(z).clat)
-        zoneCentroids(z,2) = TerminalZone(z).clat;
-    else
         validY = TerminalZone(z).Y(~isnan(TerminalZone(z).Y));
-        zoneCentroids(z,2) = mean(validY);
+        if numel(validX) > 1 && validX(end) == validX(1) && validY(end) == validY(1)
+            validX(end) = [];
+            validY(end) = [];
+        end
+        zoneCentroids(z,:) = [mean(validX), mean(validY)];
     end
     % Estimate demand for the zone (m^3/h)
     zoneDemand(z) = TerminalZone(z).Population * params.demandFactor;
@@ -205,7 +200,7 @@ end
 % Compute total demand among all nodes.
 totalDemand = sum([GasSystem.Node.RealDemand]);
 
-% For each source node, we need to get its “attached” pipe capacity.
+% Estimate each source node's attached pipe capacity.
 % Here, we assume that for a given node, the effective capacity, gc(n),
 % is the maximum Capacity of all edges incident to that node.
 gc = zeros(length(sourceIndices),1);
@@ -300,6 +295,11 @@ fprintf('Maximum flow is %g, total demand is %g\n', flowValue, nodeDemandTotal);
 
 % Create a sparse matrix for flow values.
 flowNet = sparse(flowEdges.Edges.EndNodes(:,1), flowEdges.Edges.EndNodes(:,2), flowEdges.Edges.Weight);
+
+% Replace the initial source allocation with the generation used by maxflow.
+for idx = sourceNodes
+    GasSystem.Node(idx).RealGeneration = full(flowNet(N+1, GasSystem.Node(idx).ID));
+end
 
 % Update each edge's RealFlow based on the computed flow.
 for e = 1:numEdges

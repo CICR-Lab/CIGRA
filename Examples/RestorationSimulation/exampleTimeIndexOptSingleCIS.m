@@ -2,59 +2,59 @@ clc
 clear
 close all
 
-CIGRA_root = fileparts(fileparts(pwd));
+ExampleDir = fileparts(mfilename('fullpath'));
+ExamplesDir = fileparts(ExampleDir);
+CIGRA_root = fileparts(ExamplesDir);
 addpath(genpath(CIGRA_root));
-CasePath = strcat(fileparts(pwd), '\Shelby\');
-load(strcat(CasePath,'\Zone\TerminalZone.mat'),'TerminalZone');
-load(strcat(CasePath,'\Boundary\AreaBoundary.mat'), 'AreaBoundary');
+CasePath = fullfile(ExamplesDir, 'Shelby');
+load(fullfile(CasePath, 'Zone', 'TerminalZone.mat'),'TerminalZone');
+load(fullfile(CasePath, 'Boundary', 'AreaBoundary.mat'), 'AreaBoundary');
 
 CIS_Type='power'; %% power | gas | water
-Model_Type='DCPF'; %% MF | DCPF
+Model_Type='MF'; %% MF | DCPF
 Repair_Crew=1;
 Scenario_ID=1;
-
 %% set parameters and initialize
 params=struct;
 params.SystemType = CIS_Type;
-params.FunMetric = Model_Type;
 params.RepairCrew = Repair_Crew;
 
 ResLoss=[]; SysFunsEvo=[]; RepairSeq=[];
 %% Load power system data and define damage scenario
 if strcmp(CIS_Type,'power')
-    load(strcat(CasePath,'\Power\PowerSystem.mat'),'PowerSystem');
-    load(strcat(CasePath,'SeismicScenario\PowerComDamgScenarioGivenMaEpID1.mat'),'PowerComDamgScenario');
+    load(fullfile(CasePath, 'Power', 'PowerSystem.mat'),'PowerSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'PowerComDamgScenarioGivenMaEpID1.mat'),'PowerComDamgScenario');
     CIS=PowerSystem;
     ComDamgScenario=PowerComDamgScenario;
     System_type=1;
     
     if ~ismember(Model_Type, ["MF","DCPF"])
-        error('Invalid input. Choose from: Pop, MF, DCPF.');
+        error('Invalid input. Choose from: MF, DCPF.');
     end
 end
 
 %% Load gas system data and define damage scenario
 if strcmp(CIS_Type,'gas')
-    load(strcat(CasePath,'\Gas\GasSystem.mat'),'GasSystem');
-    load(strcat(CasePath,'SeismicScenario\GasComDamgScenarioGivenMaEpID1.mat'),'GasComDamgScenario');
+    load(fullfile(CasePath, 'Gas', 'GasSystem.mat'),'GasSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'GasComDamgScenarioGivenMaEpID1.mat'),'GasComDamgScenario');
     CIS=GasSystem;
     ComDamgScenario=GasComDamgScenario;
     System_type=2;
     
-    if ~ismember(Model_Type, ["MF"])
+    if ~ismember(Model_Type, "MF")
         error('Invalid input. Must be: MF.');
     end
 end
 
 %% Load water system data and define damage scenario
 if strcmp(CIS_Type,'water')
-    load(strcat(CasePath,'\Water\WaterSystem.mat'),'WaterSystem');
-    load(strcat(CasePath,'SeismicScenario\WaterComDamgScenarioGivenMaEpID1.mat'),'WaterComDamgScenario');
+    load(fullfile(CasePath, 'Water', 'WaterSystem.mat'),'WaterSystem');
+    load(fullfile(CasePath, 'SeismicScenario', 'WaterComDamgScenarioGivenMaEpID1.mat'),'WaterComDamgScenario');
     CIS=WaterSystem;
     ComDamgScenario=WaterComDamgScenario;
     System_type=3;
     
-    if ~ismember(Model_Type, ["MF"])
+    if ~ismember(Model_Type, "MF")
         error('Invalid input. Must be: MF.');
     end
 end
@@ -85,7 +85,9 @@ switch Model_Type
         [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = TimeIndexOptSingleDCPF(CIS, CISComDamgScenario, TerminalZone, params);
 end
 %% display recovery dynamic
-optsDyn = struct('SystemType', CIS_Type);
+optsDyn = struct( ...
+    'SystemType', CIS_Type, 'HideColorbars', false, 'GIFFile', fullfile(ExampleDir, ...
+    sprintf('CIS_Restoration_TimeIndexOpt_%s_%s.gif', CIS_Type, Model_Type)));
 mapSingleCISRestorationDynamic(AreaBoundary, CIS, TerminalZone, SysFunsEvo, RepairSeq, ZoneStateEvo, optsDyn);
 
 %% Print results
@@ -98,5 +100,5 @@ disp(SysFunsEvo);
 disp('Repair Sequence: [DamageType, ComponentID, SysType, Time Point, TeamID]');
 disp(RepairSeq);
 
-disp('Zone State Evolution: [Column 1: Zone id, Columns 2..K: Zone State]');
+disp('Zone State Evolution: [ZoneID, zone states at all functionality time points]');
 disp(ZoneStateEvo);

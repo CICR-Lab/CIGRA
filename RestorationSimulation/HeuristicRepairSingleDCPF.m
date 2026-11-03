@@ -6,27 +6,22 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = HeuristicRepairSingleD
 % by a DC power flow model.
 %
 % INPUT:
-%   CIS                 : struct with two arrays, CIS.Node (1℅N) and CIS.Edge (1℅E).  Its contents depend on params.SystemType:
-%                        If ＆power＊:
+%   CIS                 : struct with two arrays, CIS.Node (1 x N) and CIS.Edge (1 x E):
+%                        If 'power':
 %                         CIS.Node fields:
-%                         每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%                         每 Voltage, ServiceZone, ClassName, SeismicFragilityType  
+%                         - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%                         - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %                         CIS.Edge fields:
-%                        每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage, 
-%                        每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType  
-%                        If ＆gas＊ or ＆water＊:
-%                         CIS.Node fields:
-%                        每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%                        每 Pressure, ServiceZone, ClassName, SeismicFragilityType  
-%                        CIS.Edge fields:
-%                        每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType  
+%                         - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%                         - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
 %   CISComDamgScenario   : [Ndm x 4] matrix, each row = [DamageType, ComponentID, RepairTime, SysType]
 %                          DamageType: 1=node, 2=edge
 %                          ComponentID: node index (if 1) or edge index (if 2)
-%                          RepairTime: duration to repair this component
+%                          RepairTime: repair duration in the user-defined time unit (days in the Shelby examples)
 %                          SysType: system type code (kept for consistency)
 %   TerminalZone : structure array defining spatial zone divisions. 
 %   params             : Struct with fields
+%                        .SystemType  'power'
 %                        .ScheMethod   'GA' or 'SA'
 %                        .RepairCrew   positive integer
 %                        GA options: .GANumInd .GAMaxgen .GASelectionRate
@@ -36,13 +31,16 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = HeuristicRepairSingleD
 %
 % OUTPUT:
 %   ResLoss     : [1x3] vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
+%                 NormalizedResilienceLoss is dimensionless; RealResilience and ExpectedResilience
+%                 use the same time unit as RepairTime.
 %   SysFunsEvo  : [(Ndm+1) x 4] matrix:
 %                 [time, normalized functionality drop, post-disaster functionality, pre-disaster functionality]
 %                 (row 1 is the pre-repair state at time=0)
 %   RepairSeq   : [Ndm x 5] matrix:
 %                 [DamageType, ComponentID, SysType, FinishTime, TeamID]
-%   ZoneStateEvo   : Z℅K numeric matrix of zone states at critical time points
-%                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%                 FinishTime uses the same time unit as RepairTime.
+%   ZoneStateEvo : [Z x (Ndm+2)] matrix: [ZoneID, initial service level,
+%                  service levels after each repair]
 
 %%  Step 1: Validate inputs
 validSystems = {'power'};
@@ -132,7 +130,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = GABasedRepairSchedulin
 % components to minimize resilience loss under given crews.
 % 
 % INPUT:
-% CIS, CISComDamgScenario,TerminalZone, params : Same as main function. GA fields used﹝
+% CIS, CISComDamgScenario, TerminalZone, params : Same as main function. GA fields used.
 %
 % OUTPUT:
 % ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo: Same definitions as main function.
@@ -259,13 +257,14 @@ function [SysFunsEvo, ResLoss, ZoneStateEvo] = computeRestorationCurveSingleDCPF
 % OUTPUT:
 %    SysFunsEvo -  [time stamps, normalized functionality drop at each
 %                  time, post-disaster functionality at each time, pre-disaster functionality]
-%    ResLoss    -  [NormLoss, RealRes, ExpectedRes]
-%    ZoneStateEvo - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%    ResLoss    -  [NormLoss, RealRes, ExpectedRes]; NormLoss is dimensionless,
+%                  while RealRes and ExpectedRes use the same time unit as RepairTime
+%    ZoneStateEvo - [ZoneID, initial service level, service levels after each repair]
 
 Ndm = size(CISComDamgScenario,1);
 SysFunsEvo = zeros(Ndm+1,4);
 SysFunsEvo(2:end,1) = RepairSeq(:,4);
-ZoneStateEvo = nan(numel(TerminalZone), Ndm+1);
+ZoneStateEvo = nan(numel(TerminalZone), Ndm+2);
 
 [SysFunLoss, ~, ZoneState] = SingleDCPF(CIS, CISComDamgScenario, params, TerminalZone);
 SysFunsEvo(1,2:4) = SysFunLoss;

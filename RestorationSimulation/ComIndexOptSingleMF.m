@@ -9,7 +9,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleMF(CI
 %   induced by these exact repair times.
 %
 % INPUTS:
-%   CIS                 : struct with two arrays, CIS.Node (1¡ÁN) and CIS.Edge (1¡ÁE). If params.SystemType=='power':
+%   CIS                 : struct with two arrays, CIS.Node (1 x N) and CIS.Edge (1 x E). If params.SystemType=='power':
 %                         CIS.Node fields include:
 %                           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %                           Longitude, Latitude, ServedPopulation, Voltage,
@@ -18,7 +18,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleMF(CI
 %                           ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity,
 %                           Susceptance, Voltage, X, Y, ClassName, SeismicFragilityType
 %
-%   CISComDamgScenario  : [Ndm¡Á4] each row = [DamageType, ComponentID, RepairTime, SysType]
+%   CISComDamgScenario  : [Ndm x 4] each row = [DamageType, ComponentID, RepairTime, SysType]
 %                         DamageType: 1=node, 2=edge
 %                         ComponentID: node index (if 1) or edge index (if 2)
 %                         RepairTime: duration to repair this component
@@ -27,7 +27,6 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleMF(CI
 %   params              : struct with fields
 %                         .SystemType   : 'power' | 'gas' | 'water'
 %                         .RepairCrew   : positive integer, number of repair teams
-%                         .RefNode      : reference node ID for phase angle (default=1)
 %
 % OUTPUT:
 %   ResLoss     : [1x3] vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
@@ -36,7 +35,7 @@ function [ResLoss, SysFunsEvo, RepairSeq, ZoneStateEvo] = ComIndexOptSingleMF(CI
 %                 (row 1 is the pre-repair state at time=0)
 %   RepairSeq   : [Ndm x 5] matrix:
 %                 [DamageType, ComponentID, SysType, FinishTime, TeamID]
-%   ZoneStateEvo   : Z¡ÁK numeric matrix of zone states at critical time points
+%   ZoneStateEvo   : Z x K numeric matrix of zone states at critical time points
 %                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
 %% Step 1: Input validation
 validSystems = {'power', 'gas', 'water'};
@@ -49,7 +48,6 @@ if ~isfield(params,'RepairCrew') || ~isscalar(params.RepairCrew) || params.Repai
 end
 RR = params.RepairCrew;   % number of repair teams
 
-if ~isfield(params, 'RefNode'),    params.RefNode  = 1;   end
 
 %% Step 2: Initialization
 N = numel(CIS.Node);
@@ -76,7 +74,6 @@ CISComDamgScenario(CISComDamgScenario(:,1)==2,2) = N + CISComDamgScenario(CISCom
 % number of time point = the number of damaged component plus 1
 Tp = Ndm+1;
 
-M = 10^8; % big-M
 %% Step 3: Construct objective function and variable bounds
 % operation variablkes+x(n,t)+eta(k,t)+r(k,n,t)+y(k,n,t)+alpha(k,n,t)+beta(k,n,t)+z(l,t)
 Nv = (Ns+Nd+E)*(Tp-1) + Ndm*Tp + RR*Tp + Ndm*RR*Tp + Ndm*RR*Tp + Ndm*RR*(Tp-1) + Ndm*RR*(Tp-1) + E*(Tp-1);
@@ -108,15 +105,15 @@ for tp = 1 : Tp-1
 
     % flow constraints
     for e = 1 : E
-        inetag1 = E*4*(tp-1)+e;
+        inetag1 = E*2*(tp-1)+e;
 
-        Aineq1(inetag1+2*E,tag1+Ns+Nd+e)=1;
-        Aineq1(inetag1+2*E,tag8+e)=-CIS.Edge(e).Capacity;
-        bineq1(inetag1+2*E)=0;
+        Aineq1(inetag1,tag1+Ns+Nd+e)=1;
+        Aineq1(inetag1,tag8+e)=-CIS.Edge(e).Capacity;
+        bineq1(inetag1)=0;
         
-        Aineq1(inetag1+3*E,tag1+Ns+Nd+e)=-1;
-        Aineq1(inetag1+3*E,tag8+e)=-CIS.Edge(e).Capacity;
-        bineq1(inetag1+3*E)=0;
+        Aineq1(inetag1+E,tag1+Ns+Nd+e)=-1;
+        Aineq1(inetag1+E,tag8+e)=-CIS.Edge(e).Capacity;
+        bineq1(inetag1+E)=0;
     end
     
     % demand node constraints
@@ -350,8 +347,9 @@ for t = 1:Tp-1
     ComDemand = arrayfun(@(i) CIS.Node(i).TargetDemand - Demnode(i), 1:N);
     ZoneStateEvo(:,t+1)= mapNodeStatesToZones(CIS, ComDemand', TerminalZone,'Flow');
 end
-SysFunsEvo(end,3) = TPD;
-ZoneStateEvo(:,end) = 1;
+[fullSysFun, ~, fullZoneState] = SingleMF(CIS, zeros(0,4), params, TerminalZone);
+SysFunsEvo(end,3:4) = fullSysFun(2:3);
+ZoneStateEvo(:,end) = fullZoneState(:,2);
 
 PostNorm = SysFunsEvo(:,3)./max(SysFunsEvo(:,4),eps);
 SysFunsEvo(:,2) = 1 - PostNorm;

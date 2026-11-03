@@ -4,29 +4,27 @@ function route = ShortestRouteAlongRoadNet(RoadNet, sourcePt, destPt)
 %
 %   route = ShortestRouteAlongRoadNet(RoadNet, sourcePt, destPt) finds the
 %   shortest route along the road network between sourcePt and destPt. For each
-%   point, the function first searches for candidate nodes and edges within a
+%   point, the function searches for candidate nodes and edges within a
 %   bounding box centered on the point. If none are found, the box is enlarged
-%   (by a factor of 1.5) until at least one candidate is available. The point is
-%   then snapped to the nearest component (node or edge). If snapping to an edge,
-%   the edge is split (a new node is inserted).
+%   by a factor of 1.5 until at least one candidate is available. The point is
+%   then snapped to the nearest candidate node or edge. If snapping to an edge,
+%   the edge is split by inserting a new node.
 %
 %   Inputs:
 %       RoadNet: Structure with fields:
-%           RoadNet.NodeData = [NodeID, Longitude, Latitude];
-%           RoadNet.EdgeData = [EdgeID, FromNodeID, ToNodeID, Length, HighwayType, MaxSpeed];
-%           RoadNet.EdgeStr  (e).X = [longitude coordinates for turning points along edge e, NaN];
-%           RoadNet.EdgeStr  (e).Y = [latitude coordinates for turning points along edge e, NaN];
+%           RoadNet.Node(n).ID, .Longitude, .Latitude;
+%           RoadNet.Edge(e).ID, .FromNodeID, .ToNodeID, .Length,
+%               .Highway, .MaxSpeed, .X, .Y.
+%           Edge coordinates must be ordered from FromNodeID to ToNodeID and
+%           terminated by NaN.
 %
 %       sourcePt: [Longitude, Latitude] for the source.
 %       destPt:   [Longitude, Latitude] for the destination.
 %
 %   Output:
 %       route: Structure with fields:
-%           route.X = [longitude coordinates for turning points along the route, NaN]
-%           route.Y = [latitude coordinates for turning points along the route, NaN]
-%
-%   Author: [Your Name]
-%   Date: [Date]
+%           route.X = [longitude coordinates along the route, NaN]
+%           route.Y = [latitude coordinates along the route, NaN]
 
 newRoadNet=struct;
 newRoadNet.NodeData=[[RoadNet.Node.ID]' [RoadNet.Node.Longitude]' [RoadNet.Node.Latitude]'];
@@ -47,6 +45,15 @@ G = graph(edgeData(:,2), edgeData(:,3), edgeData(:,4));
 [nodePath, ~] = shortestpath(G, srcNode, destNode);
 if isempty(nodePath)
     error('No route found between the snapped source and destination nodes.');
+end
+
+% If both points snap to the same node, include that node in the route.
+if srcNode == destNode
+    snapRow = find(RoadNet.NodeData(:,1) == srcNode, 1);
+    snapPt = RoadNet.NodeData(snapRow, 2:3);
+    route = struct('X', [sourcePt(1), snapPt(1), destPt(1), NaN], ...
+        'Y', [sourcePt(2), snapPt(2), destPt(2), NaN]);
+    return;
 end
 
 %% Step 3: Reconstruct the route by concatenating edge geometries.
@@ -89,18 +96,16 @@ routeY = [routeY,destPt(2),NaN];
 
 route = struct('X', routeX, 'Y', routeY);
 
-%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 %% Nested Function: Snap a point to the network using a gradually enlarged box.
 function [updatedRoadNet, snapNodeID] = snapPointToNetwork(roadNet, pt)
-    % snapPointToNetwork snaps point pt to the nearest network component
-    % (node or edge) using candidate filtering based on a gradually enlarged
-    % bounding box.
+    % snapPointToNetwork snaps point pt to the nearest candidate node or edge
+    % found using a gradually enlarged bounding box.
     %
     % updatedRoadNet is the updated network (if an edge is split) and
     % snapNodeID is the ID of the node to which pt is snapped.
 
     % Parameters for the search.
-    initBoxSize = 0.001;  % initial half-width in degrees (~111 km at equator)
+    initBoxSize = 0.001;  % initial half-width in degrees (~111 m in latitude)
     enlargementFactor = 1.5;
     
     % --- Candidate Node Selection ---
@@ -135,7 +140,7 @@ function [updatedRoadNet, snapNodeID] = snapPointToNetwork(roadNet, pt)
                 % Check if the edge's bounding box intersects the search box.
                 if (max(edgeX(valid)) >= pt(1)-boxSizeEdge) && (min(edgeX(valid)) <= pt(1)+boxSizeEdge) && ...
                    (max(edgeY(valid)) >= pt(2)-boxSizeEdge) && (min(edgeY(valid)) <= pt(2)+boxSizeEdge)
-                    candidateEdges = [candidateEdges; ei];
+                    candidateEdges = [candidateEdges; ei]; %#ok<AGROW>
                 end
             end
         end
@@ -149,7 +154,6 @@ function [updatedRoadNet, snapNodeID] = snapPointToNetwork(roadNet, pt)
     bestEdgeIdx = -1;
     bestProjPt = [];
     bestSegIdx = -1;
-    bestT = -1;
     for i = 1:length(candidateEdges)
         ei = candidateEdges(i);
         edgeX = roadNet.EdgeStr(ei).X;
@@ -158,13 +162,12 @@ function [updatedRoadNet, snapNodeID] = snapPointToNetwork(roadNet, pt)
         polyX = edgeX(valid);
         polyY = edgeY(valid);
         if length(polyX) < 2, continue; end
-        [dEdge, projPt, segIdx, t] = pointToPolylineDistance(pt, polyX, polyY);
+        [dEdge, projPt, segIdx] = pointToPolylineDistance(pt, polyX, polyY);
         if dEdge < minDistEdge
             minDistEdge = dEdge;
             bestEdgeIdx = ei;
             bestProjPt = projPt;
             bestSegIdx = segIdx;
-            bestT = t;
         end
     end
     
@@ -198,7 +201,19 @@ function [updatedRoadNet, snapNodeID] = snapPointToNetwork(roadNet, pt)
         L2=0;
         for h=1:length(polyPart2X)-1
             L2=L2+longitude_latitude(polyPart2X(h),polyPart2Y(h),polyPart2X(h+1),polyPart2Y(h+1));
-        end       
+        end
+
+        % Preserve the unit of the original edge weight. The geometric
+        % calculations above are used only to split that weight by ratio.
+        splitGeometryLength = L1 + L2;
+        if splitGeometryLength > 0
+            lengthScale = origEdge(4) / splitGeometryLength;
+            L1 = L1 * lengthScale;
+            L2 = L2 * lengthScale;
+        else
+            L1 = 0;
+            L2 = origEdge(4);
+        end
         
         % Remove original edge.
         updatedRoadNet.EdgeData(bestEdgeIdx, :) = [];

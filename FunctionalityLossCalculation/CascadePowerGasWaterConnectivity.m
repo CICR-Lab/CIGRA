@@ -11,20 +11,20 @@ function [PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, PowerComState, GasCom
 %
 % INPUTS:
 %   PowerSystem, GasSystem, WaterSystem:
-%       struct with two arrays, CIS.Node (1℅N) and CIS.Edge (1℅E).
+%       struct with two arrays, .Node (1xN) and .Edge (1xE).
 %       PowerSystem
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%             每 Voltage, ServiceZone, ClassName, SeismicFragilityType
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
-%             每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%             - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
 %       GasSystem, WaterSystem:
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
-%             每 Pressure, ServiceZone, ClassName, SeismicFragilityType
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Pressure, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
 %
 %   PowerGasInterdependency:
 %       A structure with fields:
@@ -35,16 +35,18 @@ function [PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, PowerComState, GasCom
 %       A structure with fields:
 %           .PowerToWater: [PowerNodeID, WaterNodeID, TargetPowerFlow]
 %           .WaterToPower: [WaterNodeID, PowerNodeID, TargetWaterFlow]
+%       Node IDs in all interdependency matrices are used as 1-based node indices.
 %
 %   PowerComDamgScenario, GasComDamgScenario, WaterComDamgScenario:
-%        K℅2 matrix of damaged components:
+%        Kx2 matrix of damaged components:
 %        [DamageType (1=node, 2=edge), DamageComponentID]
+%        Component IDs are used as 1-based node or edge indices.
 %
 %   TerminalZone : structure array defining spatial zone divisions.
 %
 %   params:
 %       A structure containing:
-%           - params.FunMetric: Functionality metric ('Pop', 'SDC', 'LCS', 'NPC')
+%           - params.FunMetric: Functionality metric ('POP', 'SDC', 'LCS', 'NPC')
 %           - params.PowerNodeWeight: Vector (if not provided, defaults to ones)
 %           - params.GasNodeWeight: Vector (if not provided, defaults to ones)
 %           - params.WaterNodeWeight: Vector (if not provided, defaults to ones)
@@ -57,16 +59,18 @@ function [PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss, PowerComState, GasCom
 %       Nx2 matrices for each system (N = number of nodes) with columns: [Post-disaster node functionality state,Pre-disaster node functionality state]
 %
 %   PowerZoneState, GasZoneState, WaterZoneState:
-%       G℅2 matrix of zone-level functionality states, where G is the maximum zone ID:
+%       Gx2 matrix of zone-level functionality states, where G is numel(TerminalZone):
+%       Unmapped zones remain NaN; if several nodes map to one zone, the maximum node state is used.
 %
 %   CascadeTrace:
-%       Structure array recording the *entire* cascade evolution process.
-%       Each element CascadeTrace(r) corresponds to one cascade iteration (r = 1＃R).
+%       Structure array recording the state after direct damage and after each cascade update.
+%       Element 1 is before dependency propagation; later elements exist only when new affected nodes are found.
 %       Fields include:
-%         - PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss   : System-level functionality losses at iteration r
-%         - PowerNodeState, GasNodeState, WaterNodeState      : Per-node state in power, gas and water system
-%         - PowerToGas, GasToPower,PowerToWater, WaterToPower : Binary vectors (1=active, 0=failed) showing interdependency link states
-%         - PowerZoneState,GasZoneState,WaterZoneState      : Zone-level service state.
+%         - PowerSysFunLoss, GasSysFunLoss, WaterSysFunLoss    : System-level functionality metric values at the stored state
+%         - PowerNodeState, GasNodeState, WaterNodeState       : Per-node state at the stored state
+%         - PowerToGas, GasToPower, PowerToWater, WaterToPower : 1 if the target node is not in the cumulative affected-node list;
+%                                                                0 otherwise (the initial vectors are all ones)
+%         - PowerZoneState, GasZoneState, WaterZoneState       : Zone-level service state
 
 %% Step 1: Set default parameters if not provided
 if ~isfield(params, 'PowerNodeWeight')
@@ -78,8 +82,8 @@ end
 if ~isfield(params, 'WaterNodeWeight')
     params.WaterNodeWeight = ones(size(WaterSystem.Node,2), 1);
 end
-if ~ismember(params.FunMetric, {'Pop', 'SDC', 'LCS', 'NPC'})
-    error('Invalid FunMetric. Must be one of {"Pop", "SDC", "LCS", "NPC"}.');
+if ~ismember(params.FunMetric, {'POP', 'SDC', 'LCS', 'NPC'})
+    error('Invalid FunMetric. Must be one of {"POP", "SDC", "LCS", "NPC"}.');
 end
 
 % Initialize component states (columns: [post-disaster, pre-disaster])
@@ -93,26 +97,29 @@ GasSysFunLoss   = zeros(1,3);
 WaterSysFunLoss = zeros(1,3);
 
 %% Step 2: Construct the original network graphs and calculate pre-disaster functionality
-PowerG = graph([PowerSystem.Edge.FromNodeID], [PowerSystem.Edge.ToNodeID]);
-GasG = graph([GasSystem.Edge.FromNodeID], [GasSystem.Edge.ToNodeID]);
-WaterG = graph([WaterSystem.Edge.FromNodeID], [WaterSystem.Edge.ToNodeID]);
+PowerG = graph([PowerSystem.Edge.FromNodeID], [PowerSystem.Edge.ToNodeID], [], numel(PowerSystem.Node));
+GasG = graph([GasSystem.Edge.FromNodeID], [GasSystem.Edge.ToNodeID], [], numel(GasSystem.Node));
+WaterG = graph([WaterSystem.Edge.FromNodeID], [WaterSystem.Edge.ToNodeID], [], numel(WaterSystem.Node));
 
 % Calculate pre-disaster functionality; store baseline results in column 2 of ComState and pre-disaster system functionality in element 3 of SysFunLoss.
-[PowerSysFunLoss(3), PowerComState(:,2)] = calculateFunctionality(PowerSystem, PowerG, params.PowerNodeWeight, params.FunMetric);
+[PowerSysFunLoss(3), PowerComState(:,2)] = calculateFunctionality(PowerSystem, PowerG, params.PowerNodeWeight, params.FunMetric, true(numel(PowerSystem.Node), 1));
 PowerZoneState(:,2) = mapNodeStatesToZones(PowerSystem, PowerComState(:,2), TerminalZone,'Topology');
-[GasSysFunLoss(3), GasComState(:,2)] = calculateFunctionality(GasSystem, GasG, params.GasNodeWeight, params.FunMetric);
+[GasSysFunLoss(3), GasComState(:,2)] = calculateFunctionality(GasSystem, GasG, params.GasNodeWeight, params.FunMetric, true(numel(GasSystem.Node), 1));
 GasZoneState(:,2) = mapNodeStatesToZones(GasSystem, GasComState(:,2), TerminalZone,'Topology');
-[WaterSysFunLoss(3), WaterComState(:,2)] = calculateFunctionality(WaterSystem, WaterG, params.WaterNodeWeight, params.FunMetric);
+[WaterSysFunLoss(3), WaterComState(:,2)] = calculateFunctionality(WaterSystem, WaterG, params.WaterNodeWeight, params.FunMetric, true(numel(WaterSystem.Node), 1));
 WaterZoneState(:,2) = mapNodeStatesToZones(WaterSystem, WaterComState(:,2), TerminalZone,'Topology');
-%% Step 3: Remove damaged components from each system
-PowerG = removeDamagedComponents(PowerG, PowerComDamgScenario);
-GasG = removeDamagedComponents(GasG, GasComDamgScenario);
-WaterG = removeDamagedComponents(WaterG, WaterComDamgScenario);
+%% Step 3: Remove damaged edges and isolate damaged nodes in each system
+[PowerG, powerActiveNode] = removeDamagedComponents(PowerSystem, PowerG, PowerComDamgScenario);
+[GasG, gasActiveNode] = removeDamagedComponents(GasSystem, GasG, GasComDamgScenario);
+[WaterG, waterActiveNode] = removeDamagedComponents(WaterSystem, WaterG, WaterComDamgScenario);
 
 %% Step 4: Recalculate the operation state for each node using the damaged network
-[PowerSysFunLoss(2), PowerComState(:,1)] = calculateFunctionality(PowerSystem, PowerG, params.PowerNodeWeight, params.FunMetric);
-[GasSysFunLoss(2), GasComState(:,1)] = calculateFunctionality(GasSystem, GasG, params.GasNodeWeight, params.FunMetric);
-[WaterSysFunLoss(2), WaterComState(:,1)] = calculateFunctionality(WaterSystem, WaterG, params.WaterNodeWeight, params.FunMetric);
+[PowerSysFunLoss(2), PowerComState(:,1)] = calculateFunctionality(PowerSystem, PowerG, params.PowerNodeWeight, params.FunMetric, powerActiveNode);
+[GasSysFunLoss(2), GasComState(:,1)] = calculateFunctionality(GasSystem, GasG, params.GasNodeWeight, params.FunMetric, gasActiveNode);
+[WaterSysFunLoss(2), WaterComState(:,1)] = calculateFunctionality(WaterSystem, WaterG, params.WaterNodeWeight, params.FunMetric, waterActiveNode);
+PowerZoneState(:,1) = mapNodeStatesToZones(PowerSystem, PowerComState(:,1), TerminalZone,'Topology');
+GasZoneState(:,1) = mapNodeStatesToZones(GasSystem, GasComState(:,1), TerminalZone,'Topology');
+WaterZoneState(:,1) = mapNodeStatesToZones(WaterSystem, WaterComState(:,1), TerminalZone,'Topology');
 
 CascadeTrace=struct();
 CascadeTrace(1).PowerSysFunLoss=PowerSysFunLoss(2);CascadeTrace(1).GasSysFunLoss=GasSysFunLoss(2);CascadeTrace(1).WaterSysFunLoss=WaterSysFunLoss(2);
@@ -123,9 +130,9 @@ CascadeTrace(1).PowerToGas=ones(size(PowerGasInterdependency.PowerToGas,1),1);
 CascadeTrace(1).GasToPower=ones(size(PowerGasInterdependency.GasToPower,1),1);
 CascadeTrace(1).PowerToWater=ones(size(PowerWaterInterdependency.PowerToWater,1),1);
 CascadeTrace(1).WaterToPower=ones(size(PowerWaterInterdependency.WaterToPower,1),1);
-CascadeTrace(1).PowerZoneState=mapNodeStatesToZones(PowerSystem, PowerComState(:,1), TerminalZone,'Topology');
-CascadeTrace(1).GasZoneState=mapNodeStatesToZones(GasSystem, GasComState(:,1), TerminalZone,'Topology');
-CascadeTrace(1).WaterZoneState=mapNodeStatesToZones(WaterSystem, WaterComState(:,1), TerminalZone,'Topology');
+CascadeTrace(1).PowerZoneState=PowerZoneState(:,1);
+CascadeTrace(1).GasZoneState=GasZoneState(:,1);
+CascadeTrace(1).WaterZoneState=WaterZoneState(:,1);
 %% Step 5: Simulate cascading effects using interdependency relationships
 % Initialize cascade flags
 powertag = 1; gastag = 1; watertag = 1;
@@ -135,7 +142,7 @@ tag=1;
 % While loop to simulate cascading
 while (powertag || gastag || watertag)
     tag=tag+1;
-    % Reset cascade flags and lists of affected nodes in each system
+    % Reset cascade flags; affected-node lists remain cumulative
     powertag = 0; gastag = 0; watertag = 0;
     
     % Check interdependency: Power-to-Gas cascading effect
@@ -185,13 +192,19 @@ while (powertag || gastag || watertag)
         damagePowerG = removeEdges(PowerG, affectedPowerNodes);
         damageGasG = removeEdges(GasG, affectedGasNodes);
         damageWaterG = removeEdges(WaterG, affectedWaterNodes);
+        currentPowerActiveNode = powerActiveNode;
+        currentPowerActiveNode(affectedPowerNodes) = false;
+        currentGasActiveNode = gasActiveNode;
+        currentGasActiveNode(affectedGasNodes) = false;
+        currentWaterActiveNode = waterActiveNode;
+        currentWaterActiveNode(affectedWaterNodes) = false;
         
         % Recalculate the post-disaster functionality using the updated graphs
-        [PowerSysFunLoss(2), PowerComState(:,1)] = calculateFunctionality(PowerSystem, damagePowerG, params.PowerNodeWeight, params.FunMetric);
+        [PowerSysFunLoss(2), PowerComState(:,1)] = calculateFunctionality(PowerSystem, damagePowerG, params.PowerNodeWeight, params.FunMetric, currentPowerActiveNode);
         PowerZoneState(:,1) = mapNodeStatesToZones(PowerSystem, PowerComState(:,1), TerminalZone,'Topology');
-        [GasSysFunLoss(2), GasComState(:,1)] = calculateFunctionality(GasSystem, damageGasG, params.GasNodeWeight, params.FunMetric);
+        [GasSysFunLoss(2), GasComState(:,1)] = calculateFunctionality(GasSystem, damageGasG, params.GasNodeWeight, params.FunMetric, currentGasActiveNode);
         GasZoneState(:,1) = mapNodeStatesToZones(GasSystem, GasComState(:,1), TerminalZone,'Topology');
-        [WaterSysFunLoss(2), WaterComState(:,1)] = calculateFunctionality(WaterSystem, damageWaterG, params.WaterNodeWeight, params.FunMetric);
+        [WaterSysFunLoss(2), WaterComState(:,1)] = calculateFunctionality(WaterSystem, damageWaterG, params.WaterNodeWeight, params.FunMetric, currentWaterActiveNode);
         WaterZoneState(:,1) = mapNodeStatesToZones(WaterSystem, WaterComState(:,1), TerminalZone,'Topology');
         
         CascadeTrace(tag).PowerSysFunLoss=PowerSysFunLoss(2);CascadeTrace(tag).GasSysFunLoss=GasSysFunLoss(2);CascadeTrace(tag).WaterSysFunLoss=WaterSysFunLoss(2);
@@ -217,15 +230,16 @@ WaterSysFunLoss(1) = 1 - WaterSysFunLoss(2) / WaterSysFunLoss(3);
 end
 
 % Helper Function: calculateFunctionality
-function [SysFunLoss, ComState] = calculateFunctionality(System, G, NodeWeight, FunMetric)
+function [SysFunLoss, ComState] = calculateFunctionality(System, G, NodeWeight, FunMetric, activeNode)
 % This function calculates the system functionality and node-level performance
 % based on the selected metric.
 %
 % INPUTS:
 %   System    - The system structure (PowerSystem, GasSystem, or WaterSystem)
 %   G         - The current connectivity graph for the system
-%   NodeWeight- A vector of node weights for functionality loss calculations
-%   FunMetric - Functionality metric ('LCS', 'NPC', 'SDC', or 'Pop')
+%   NodeWeight- N x 1 weights used by NPC and SDC; ignored by LCS and POP
+%   FunMetric - Functionality metric ('LCS', 'NPC', 'SDC', or 'POP')
+%   activeNode- N x 1 logical vector indicating nodes available for connectivity calculations
 %
 % OUTPUTS:
 %   SysFunLoss - The scalar functionality metric for the system
@@ -237,14 +251,17 @@ ComState = zeros(N, 1);% Initialize node functionality vector
 % system functionality
 switch FunMetric
     case 'LCS'
-        % LCS: Largest Connected Component (LCC) Metric.
-        % Each node state is 1 if it belongs to the largest connected component.
-        componentLabels = conncomp(G);
-        componentCounts = histcounts(componentLabels, 1:(max(componentLabels)+1));
-        [largestComponentSize, largestLabel] = max(componentCounts);
-        for i = 1:N
-            ComState(i, 1) = componentLabels(i) == largestLabel;
+        % LCS: Largest Connected Component Size metric.
+        % Each active node state is 1 if it belongs to the selected largest component.
+        % If components tie in size, max selects the first component label.
+        componentLabels = conncomp(G)';
+        if ~any(activeNode)
+            SysFunLoss = 0;
+            return;
         end
+        componentCounts = accumarray(componentLabels(activeNode), 1, [max(componentLabels), 1]);
+        [largestComponentSize, largestLabel] = max(componentCounts);
+        ComState(activeNode, 1) = componentLabels(activeNode) == largestLabel;
         SysFunLoss = largestComponentSize;
         
     case 'NPC'
@@ -254,52 +271,59 @@ switch FunMetric
             reachable_nodes = setdiff(reachableNodes(i, G), i);
             ComState(i, 1) = numel(reachable_nodes) / (N - 1);
         end
-        SysFunLoss = mean(ComState(:,1) .* NodeWeight);
+        SysFunLoss = sum(ComState(:,1) .* NodeWeight) / sum(NodeWeight);
         
     case 'SDC'
         % SDC: Source Dependency Connectivity.
-        % Here, source nodes are defined as those with positive MaxGeneration.
+        % An active demand node is functional if it can reach at least one active source.
+        % Nondemand nodes are NaN.
         sourceNodes = find([System.Node.MaxGeneration] > 0);
+        activeSourceNodes = sourceNodes(activeNode(sourceNodes));
         nondemandNodes = find([System.Node.TargetDemand] == 0);
         for i = 1:N
-            if ~ismember(i, nondemandNodes)
+            if ismember(i, nondemandNodes)
+                ComState(i, 1)=NaN;
+            elseif activeNode(i)
+                reachable_nodes = reachableNodes(i, G);
+                connectedSourceNodes = intersect(reachable_nodes, activeSourceNodes);
+                ComState(i, 1) = ~isempty(connectedSourceNodes);
+            end
+        end
+        demandNodes = setdiff(1:N, nondemandNodes);
+        demandWeights = NodeWeight(demandNodes);
+        SysFunLoss = sum(ComState(demandNodes,1) .* demandWeights) / sum(demandWeights);
+        
+    case 'POP'
+        % POP: Utility source connectivity.
+        % An active node is functional if connected to an active source; SysFunLoss is the served-population fraction.
+        sourceNodes = find([System.Node.MaxGeneration] > 0 & activeNode');
+        for i = 1:N
+            if activeNode(i)
                 reachable_nodes = reachableNodes(i, G);
                 connectedSourceNodes = intersect(reachable_nodes, sourceNodes);
-                ComState(i, 1) = numel(connectedSourceNodes) / numel(sourceNodes);
-            else
-                ComState(i, 1)=NaN;
+                if ~isempty (connectedSourceNodes)
+                    ComState(i, 1) = 1;
+                end
             end
         end
-        SysFunLoss = nanmean(ComState(:,1) .* NodeWeight);
-        
-    case 'Pop'
-        % Pop: Population Served.
-        % For each node, if it is connected to any source node, assign its ServedPopulation.
-        sourceNodes = find([System.Node.MaxGeneration] > 0);
-        for i = 1:N
-            reachable_nodes = reachableNodes(i, G);
-            connectedSourceNodes = intersect(reachable_nodes, sourceNodes);
-            if ~isempty (connectedSourceNodes)
-                ComState(i, 1) = 1;
-            else
-                ComState(i, 1)=0;
-            end
-        end
-        SysFunLoss = sum(ComState(:, 1));
+        population = [System.Node.ServedPopulation]';
+        SysFunLoss = sum(ComState(:, 1) .* population) / sum(population);
 end
 end
 
 % Helper Function: removeDamagedComponents
-function G = removeDamagedComponents(G, DamgScenario)
-% Removes the damaged components (nodes/edges) from the connectivity graph.
+function [G, activeNode] = removeDamagedComponents(System, G, DamgScenario)
+% Removes damaged edges and isolates damaged nodes in the connectivity graph.
 %
 % INPUTS:
+%   System      - The system structure containing the original edge list.
 %   G           - Graph object representing the system connectivity.
 %   DamgScenario- Matrix with rows [DamageType, ComponentID],
 %                 where DamageType is 1 for node and 2 for edge.
 %
 % OUTPUT:
 %   G           - Updated graph with the damaged edges removed.
+%   activeNode  - Logical vector indicating nodes not directly damaged.
 
 % Identify damaged nodes and edges
 if ~isempty(DamgScenario)
@@ -310,8 +334,14 @@ else
     damagedEdges = [];
 end
 
-% Remove damaged edges directly
-G = rmedge(G, damagedEdges);
+activeNode = true(numnodes(G), 1);
+activeNode(damagedNodes) = false;
+
+% Remove damaged edges by their original endpoint node IDs
+damagedFromNodes = [System.Edge(damagedEdges).FromNodeID];
+damagedToNodes = [System.Edge(damagedEdges).ToNodeID];
+damagedEdgeRows = findedge(G, damagedFromNodes, damagedToNodes);
+G = rmedge(G, damagedEdgeRows);
 
 % Remove edges adjacent to damaged nodes
 for i = 1:length(damagedNodes)

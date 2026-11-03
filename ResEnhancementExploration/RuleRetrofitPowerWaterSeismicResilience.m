@@ -3,7 +3,7 @@ function [PowerRetroID, WaterRetroID, PowerSysResGain, WaterSysResGain, PowerZon
 % INTRODUCTION
 %   Perform rule-based retrofit selection for interdependent power and
 %   water systems (nodes only). The function constructs an undirected
-%   supra-graph linking all three networks through intra- and inter-system
+%   supra-graph linking both networks through intra- and inter-system
 %   edges, computes node scores based on the selected rule ('degree',
 %   'betweenness', or 'proximity'), and selects retrofit nodes across all
 %   systems under a unified budget. It then simulates pre- and
@@ -13,7 +13,7 @@ function [PowerRetroID, WaterRetroID, PowerSysResGain, WaterSysResGain, PowerZon
 %
 % INPUTS:
 %   PowerSystem, WaterSystem:
-%       Each is a struct with fields .Node (1¡ÁN) and .Edge (1¡ÁE).
+%       Each is a struct with fields .Node (1xN) and .Edge (1xE).
 %       - PowerSystem.Node fields include:
 %           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %           Longitude, Latitude, ServedPopulation, Voltage, ServiceZone,
@@ -34,41 +34,45 @@ function [PowerRetroID, WaterRetroID, PowerSysResGain, WaterSysResGain, PowerZon
 %           .PowerToWater: [PowerNodeID, WaterNodeID, TargetPowerFlow]
 %           .WaterToPower: [WaterNodeID, PowerNodeID, TargetPowerFlow]
 %
-%   SeismicMagnitudeEpicenter : Q¡Á5 matrix defining sampled seismic scenarios.
+%   SeismicMagnitudeEpicenter : Qx5 matrix defining sampled seismic scenarios.
 %          Columns: [1 Scenario_ID, 2 Magnitude, 3 Longitude, 4 Latitude, 5 Normalized_Probability]
 %
 %   TerminalZone : structure array defining spatial zone divisions (for site-based
 %          hazard computation). Each element includes:
-%           X, Y    ¡ª boundary coordinates (NaN-terminated)
-%           clon, clat ¡ª (optional) centroid longitude and latitude; if absent,
+%           X, Y    - boundary coordinates (NaN-terminated)
+%           clon, clat - (optional) centroid longitude and latitude; if absent,
 %                         computed as mean(X), mean(Y)
 %
 %   params : struct (required fields)
 %       .RetrofitRuleType        : 'degree' | 'betweenness' | 'proximity'
+%       .PowerRepairRuleType     : power repair order: 'degree' | 'betweenness' | 'proximity'
+%       .WaterRepairRuleType     : water repair order: 'degree' | 'betweenness' | 'proximity'
 %       .numSim                  : positive integer (# Monte Carlo samples)
-%       .RepairCrew              : 1¡Á3 positive-integer array [P G W], used by restoration solvers
-%       .Budget                  : nonnegative scalar (total budget shared by PGW)
-%       .PowerRetrofitUnitCost   : Np¡Á1 nonnegative numeric vector (per-node cost)
-%       .WaterRetrofitUnitCost   : Nw¡Á1 nonnegative numeric vector (per-node cost)
-%       .PowerFunMetric          : 'DCPF' | 'MF'  (power functionality model; gas/water use MF in called solvers)
+%       .RepairCrew              : 1x2 positive-integer array [P W], used by restoration solvers
+%       .Budget                  : nonnegative scalar (total budget shared by PW)
+%       .PowerRetrofitUnitCost   : Npx1 nonnegative numeric vector (per-node cost)
+%       .WaterRetrofitUnitCost   : Nwx1 nonnegative numeric vector (per-node cost)
+%       .PowerFunMetric          : 'DCPF' | 'MF'  (power functionality model; water uses MF in called solvers)
 %
 % OUTPUTS:
 %   PowerRetroID : column vector of selected power-node IDs (index-based if ID absent)
 %   WaterRetroID : column vector of selected water-node IDs
 %
-%   PowerSysResGain : 1¡Á3 row vector [¦¤R_power, R_before_power, R_after_power]
-%   WaterSysResGain : 1¡Á3 row vector [¦¤R_water, R_before_water, R_after_water]
-%     where ¦¤R_x = R_before_x ? R_after_x is the total improvement for system x
-%     when all retrofits (across PW) selected by MILP are applied simultaneously.
-%  PowerZoneResGain,WaterZoneResGain: Z¡Á3 row vector [Res_Improvement, Zone ResLoss_Before, Zone ResLoss_After]
+%   PowerSysResGain : 1x3 row vector [DeltaR_power, R_before_power, R_after_power]
+%   WaterSysResGain : 1x3 row vector [DeltaR_water, R_before_water, R_after_water]
+%     where DeltaR_x = R_before_x - R_after_x is the total improvement for system x
+%     when all retrofits selected by the rule-based greedy procedure are applied simultaneously.
+%   PowerZoneResGain, WaterZoneResGain: Zx3 matrix
+%       [Res_Improvement, ZoneResLoss_Before, ZoneResLoss_After]
 %% Step 1: Validate inputs
 % Basic presence checks
 if nargin < 6
-    error(['HeuristicRetrofitPowerWaterSeismicResilience: not enough input args. Need PowerSystem, WaterSystem, '...
+    error(['RuleRetrofitPowerWaterSeismicResilience: not enough input args. Need PowerSystem, WaterSystem, '...
         'PowerWaterInterdependency, SeismicMagnitudeEpicenter, TerminalZone, params.']);
 end
 
-requiredParams = {'PowerFunMetric','numSim','RepairCrew','Budget','RetrofitRuleType'};
+requiredParams = {'PowerFunMetric','numSim','RepairCrew','Budget','RetrofitRuleType', ...
+    'PowerRepairRuleType','WaterRepairRuleType'};
 for k = 1:numel(requiredParams)
     if ~isfield(params, requiredParams{k})
         error('Missing params.%s', requiredParams{k});
@@ -89,7 +93,6 @@ validTypes = {'degree','betweenness','proximity'};
 if ~ismember(params.RetrofitRuleType, validTypes)
     error('Invalid params.RetrofitRuleType. Allowed: %s', strjoin(validTypes,' | '));
 end
-
 % Repair crews for 2 systems: [power, water]
 if ~isfield(params,'RepairCrew')
     error('params.RepairCrew is required and must be a 1x2 positive integer array.');
@@ -100,6 +103,7 @@ end
 
 %  Retrofit Unit Cost
 sysList = {'Power','Water'};
+expectedCostLengths = [numel(PowerSystem.Node), numel(WaterSystem.Node)];
 for s = 1:numel(sysList)
     fieldCost = [sysList{s} 'RetrofitUnitCost'];
     if ~isfield(params, fieldCost)
@@ -108,6 +112,9 @@ for s = 1:numel(sysList)
     costVec = params.(fieldCost);
     if ~isnumeric(costVec) || ~isvector(costVec) || any(costVec < 0) || any(~isfinite(costVec))
         error('params.%s must be a finite, non-negative numeric vector.', fieldCost);
+    end
+    if numel(costVec) ~= expectedCostLengths(s)
+        error('params.%s must contain one value per %s node.', fieldCost, lower(sysList{s}));
     end
 end
 
@@ -195,7 +202,7 @@ switch params.RetrofitRuleType
         end
 end
 
-%% Step 3: Select retrofit nodes across power¨Cgas¨Cwater systems
+%% Step 3: Select retrofit nodes across power-water systems
 % Concatenate all nodes into a global list
 cost_all  = [params.PowerRetrofitUnitCost(:);
     params.WaterRetrofitUnitCost(:)];
@@ -330,7 +337,7 @@ WaterSysResGain = [WSysResB - WSysResA, WSysResB, WSysResA];
 PZoneDeltaRes = arrayfun(@(id) PZoneResB(id,2)-PZoneResA(id,2),1:numel(TerminalZone));
 WZoneDeltaRes = arrayfun(@(id) WZoneResB(id,2)-WZoneResA(id,2),1:numel(TerminalZone));
 PowerZoneResGain = [PZoneDeltaRes', PZoneResB(:,2), PZoneResA(:,2)];
-WaterZoneResGain = [WZoneDeltaRes', WZoneResB(:,2), WZoneResB(:,2)];
+WaterZoneResGain = [WZoneDeltaRes', WZoneResB(:,2), WZoneResA(:,2)];
 end
 
 
@@ -367,13 +374,15 @@ function [PowerSysRes, WaterSysRes, PowerZoneRes, WaterZoneRes] = ComputeRuleBas
 %
 %   params :
 %       Struct with control parameters, including:
-%           .RepairStrategy ('Rule' or 'Heuristic')
 %           .PowerFunMetric ('DCPF' or 'MF')
 %           .numSim (number of Monte Carlo samples)
+%           .PowerRepairRuleType, .WaterRepairRuleType
 %
 % OUTPUTS:
 %   PowerSysRes  : Expected resilience loss of the power system (scalar)
 %   WaterSysRes  : Expected resilience loss of the water system (scalar)
+%   PowerZoneRes : Zx2 matrix [ZoneID, expected power resilience loss]
+%   WaterZoneRes : Zx2 matrix [ZoneID, expected water resilience loss]
 
 numSim = params.numSim;
 PowerSysResLossAll = cell(numSim,1);
@@ -391,8 +400,8 @@ for i=1:numSim
     WaterCISComDamgScenario = buildSeismicDamageScenario(WaterComDamgScenario, 3, i);
     
     % ----- Dispatch to solver -----
-    params.PowerRuleType = params.RetrofitRuleType;
-    params.WaterRuleType = params.RetrofitRuleType;
+    params.PowerRuleType = params.PowerRepairRuleType;
+    params.WaterRuleType = params.WaterRepairRuleType;
     switch params.PowerFunMetric
         case 'DCPF'
             [PowerResLoss, WaterResLoss, PowerSysFunsEvo, WaterSysFunsEvo, ~, ~, PowerZoneStateEvo, WaterZoneStateEvo]...

@@ -1,41 +1,26 @@
 function zoneInfo = identifyEdgeStrPassingZones(TerminalZone, EdgeStr)
-% getZonesLengthFromEdge computes, for each zone, the total length of an edge 
-% (given by its turning-point coordinates) that lies within that zone.
+% identifyEdgeStrPassingZones Identifies zones crossed by an infrastructure edge.
 %
-%   zoneInfo = getZonesLengthFromEdge(TerminalZone, EdgeStr)
+%   zoneInfo = identifyEdgeStrPassingZones(TerminalZone, EdgeStr) returns
+%   each terminal zone containing a nonzero portion of the edge and the
+%   length of that portion in km.
 %
-%   Inputs:
-%     TerminalZone - A structure array with fields:
-%           TerminalZone(k).X : Vector of longitudes defining the zone boundary 
-%                               (with NaN at the end).
-%           TerminalZone(k).Y : Vector of latitudes defining the zone boundary
-%                               (with NaN at the end).
-%           TerminalZone(k).Type : (land use type; can be empty)
-%           TerminalZone(k).Population : Population assigned to the zone.
+%   TerminalZone is a structure array of rectangular zones with fields:
+%       ID - zone identifier
+%       X  - zone boundary longitudes, with NaN at the end
+%       Y  - zone boundary latitudes, with NaN at the end
 %
-%     EdgeStr - A structure with fields:
-%           EdgeStr.X : Vector of longitudes along the edge turning points (with NaN at the end)
-%           EdgeStr.Y : Vector of latitudes along the edge turning points (with NaN at the end)
+%   EdgeStr is a continuous polyline with fields:
+%       X - turning-point longitudes, with NaN at the end
+%       Y - turning-point latitudes, with NaN at the end
 %
-%   Output:
-%     zoneInfo - A structure array where each element has fields:
-%           zoneID      : The index of the TerminalZone in which the edge has nonzero coverage.
-%           insideLength: Total length (in km) of the portion of the edge that lies inside the zone.
+%   zoneInfo is a structure array with fields:
+%       zoneID       - value of TerminalZone(k).ID
+%       insideLength - total edge length inside that zone, in km
 %
-%   Method:
-%     1. Remove NaN entries from the edge coordinate vectors to form a continuous polyline.
-%     2. For each TerminalZone:
-%           - Remove NaN values from the zone boundary.
-%           - For each consecutive pair of turning points in the edge:
-%                 * If both endpoints are inside the polygon, add the full segment length.
-%                 * If one endpoint is inside and one outside, use polyxpoly to compute the intersection,
-%                   and add the partial segment length inside.
-%                 * If both endpoints are outside but the segment crosses the boundary,
-%                   use the two intersection points.
-%     3. Return the zone IDs (indices) that the edge touches and the total inside length for each.
-%
-%   Author: [Your Name]
-%   Date: [Date]
+%   The function first rejects zones whose bounding boxes do not overlap the
+%   edge. It then clips each edge segment against the remaining zone
+%   boundaries and accumulates the length inside each zone.
 
 %% Preprocess EdgeStr: remove NaN values
 edgeX = EdgeStr.X;
@@ -44,8 +29,15 @@ validEdge = ~isnan(edgeX) & ~isnan(edgeY);
 edgeX = edgeX(validEdge);
 edgeY = edgeY(validEdge);
 
-% Conversion factor: 1 degree ~ 111 km (approximate)
 zoneInfo = struct('zoneID', {}, 'insideLength', {});
+if numel(edgeX) < 2
+    return;
+end
+
+edgeMinX = min(edgeX);
+edgeMaxX = max(edgeX);
+edgeMinY = min(edgeY);
+edgeMaxY = max(edgeY);
 
 %% Loop over each TerminalZone
 for k = 1:length(TerminalZone)
@@ -55,6 +47,12 @@ for k = 1:length(TerminalZone)
     validZone = ~isnan(zoneX) & ~isnan(zoneY);
     zoneX = zoneX(validZone);
     zoneY = zoneY(validZone);
+
+    % Skip zones whose bounding boxes do not overlap the edge.
+    if isempty(zoneX) || edgeMaxX < min(zoneX) || edgeMinX > max(zoneX) || ...
+            edgeMaxY < min(zoneY) || edgeMinY > max(zoneY)
+        continue;
+    end
     
     % Initialize cumulative inside length.
     insideLength = 0;
@@ -77,7 +75,9 @@ for k = 1:length(TerminalZone)
             % p1 is inside, p2 is outside: find intersection.
             [xi, yi] = polyxpoly([p1(1) p2(1)], [p1(2) p2(2)], zoneX, zoneY);
             if ~isempty(xi)
-                pInt = [xi(1), yi(1)];
+                distanceSquared = (xi - p1(1)).^2 + (yi - p1(2)).^2;
+                [~, farthestIdx] = max(distanceSquared);
+                pInt = [xi(farthestIdx), yi(farthestIdx)];
                 segLength = longitude_latitude(p1(1),p1(2),pInt(1),pInt(2));
                 insideLength = insideLength + segLength;
             end
@@ -85,7 +85,9 @@ for k = 1:length(TerminalZone)
             % p1 is outside, p2 is inside: find intersection.
             [xi, yi] = polyxpoly([p1(1) p2(1)], [p1(2) p2(2)], zoneX, zoneY);
             if ~isempty(xi)
-                pInt = [xi(1), yi(1)];
+                distanceSquared = (xi - p2(1)).^2 + (yi - p2(2)).^2;
+                [~, farthestIdx] = max(distanceSquared);
+                pInt = [xi(farthestIdx), yi(farthestIdx)];
                 segLength = longitude_latitude(p2(1),p2(2),pInt(1),pInt(2));
                 insideLength = insideLength + segLength;
             end
@@ -93,9 +95,14 @@ for k = 1:length(TerminalZone)
             % Both endpoints outside. Check if segment crosses the polygon.
             [xi, yi] = polyxpoly([p1(1) p2(1)], [p1(2) p2(2)], zoneX, zoneY);
             if numel(xi) >= 2
-                % Use the first two intersections.
-                pInt1 = [xi(1), yi(1)];
-                pInt2 = [xi(2), yi(2)];
+                % Use the first and last intersections along the segment.
+                segmentDirection = p2 - p1;
+                intersectionPosition = (xi - p1(1)) * segmentDirection(1) + ...
+                    (yi - p1(2)) * segmentDirection(2);
+                [~, firstIdx] = min(intersectionPosition);
+                [~, lastIdx] = max(intersectionPosition);
+                pInt1 = [xi(firstIdx), yi(firstIdx)];
+                pInt2 = [xi(lastIdx), yi(lastIdx)];
                 segLength = longitude_latitude(pInt1(1),pInt1(2),pInt2(1),pInt2(2));
                 insideLength = insideLength + segLength;
             end

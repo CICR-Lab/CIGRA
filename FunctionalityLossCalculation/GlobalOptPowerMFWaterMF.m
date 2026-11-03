@@ -4,32 +4,32 @@ function [PowerSysFunLoss, WaterSysFunLoss, PowerComState, WaterComState, PowerZ
 %   This function assesses the functionality of interdependent power and water
 %   systems under component damage scenarios using a global optimization-based
 %   mixed-integer linear programming (MILP) formulation. A max flow model is 
-%   used to model both power and water systems..
+%   used to model both power and water systems.
 %
 % INPUTS:
 %   PowerSystem, WaterSystem
-%       struct with two fields, CIS.Node (1℅N) and CIS.Edge (1℅E).
+%       struct with two fields, CIS.Node (1-by-N) and CIS.Edge (1-by-E).
 %       PowerSystem
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Voltage, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Voltage, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage, 
-%             每 X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType  
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Susceptance, Voltage,
+%             - X (longitudes of intermediate points), Y (latitudes), ClassName, SeismicFragilityType
 %       WaterSystem:
 %         CIS.Node fields:
-%             每 ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation, 
-%             每 Pressure, ServiceZone, ClassName, SeismicFragilityType  
+%             - ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration, Longitude, Latitude, ServedPopulation,
+%             - Pressure, ServiceZone, ClassName, SeismicFragilityType
 %         CIS.Edge fields:
-%             每 ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType  
+%             - ID, FromNodeID, ToNodeID, Length, RealFlow, Capacity, Diameter, X, Y, ClassName, SeismicFragilityType
 %
 %   PowerWaterInterdependency:
 %       A structure with fields:
 %           .PowerToWater: [PowerNodeID, WaterNodeID, TargetPowerFlow]
-%           .WaterToPower: [WaterNodeID, PowerNodeID, TargetPowerFlow]
+%           .WaterToPower: [WaterNodeID, PowerNodeID, TargetWaterFlow]
 %
 %   PowerComDamgScenario, WaterComDamgScenario:
-%        K℅2 matrix of damaged components:
+%        K-by-2 matrix of damaged components:
 %        [DamageType (1=node, 2=edge), DamageComponentID]
 %
 %   TerminalZone : structure array defining spatial zone divisions.
@@ -54,7 +54,7 @@ function [PowerSysFunLoss, WaterSysFunLoss, PowerComState, WaterComState, PowerZ
 %     - PowerComState.Edge(:,2): The real flow of the edge after the disaster.
 %
 %   PowerZoneState, WaterZoneState:
-%       G℅2 matrix of zone-level functionality states, where G is the maximum zone ID:
+%       G-by-2 matrix of zone-level functionality states, where G is the number of zones:
 % 
 %% 1.Indexing & set parameters
 N_p = numel(PowerSystem.Node); N_w = numel(WaterSystem.Node);
@@ -96,6 +96,8 @@ isDamgPowerNode = ismember(PowerNodeID, PowerComDamgScenario(PowerComDamgScenari
 isDamgPowerEdge = ismember(PowerEdgeID, PowerComDamgScenario(PowerComDamgScenario(:,1)==2,2));
 isDamgWaterNode   = ismember(WaterNodeID,  WaterComDamgScenario(WaterComDamgScenario(:,1)==1,2));
 isDamgWaterEdge   = ismember(WaterEdgeID,  WaterComDamgScenario(WaterComDamgScenario(:,1)==2,2));
+isDamgPowerEdge = isDamgPowerEdge | ismember(EdgePowerFrom, PowerNodeID(isDamgPowerNode)) | ismember(EdgePowerTo, PowerNodeID(isDamgPowerNode));
+isDamgWaterEdge = isDamgWaterEdge | ismember(EdgeWaterFrom, WaterNodeID(isDamgWaterNode)) | ismember(EdgeWaterTo, WaterNodeID(isDamgWaterNode));
 
 % Interdependency relations
 Dpw = PowerWaterInterdependency.PowerToWater;
@@ -127,8 +129,8 @@ PowerGenIdx = find(MaxPowerGen~=0); Nsp = numel(PowerGenIdx);
 PowerDemIdx = find(TargetPowerDemand~=0); Ndp = numel(PowerDemIdx);
 WaterGenIdx = find(MaxWaterGen~=0);   Nsw = numel(WaterGenIdx);
 WaterDemIdx = find(TargetWaterDemand~=0); Ndw = numel(WaterDemIdx);
-Npv = E_p+Nsp+Ndp+NPdw+N_p; Nps = NPdw+NwdP; Npt_t = Npv+Nps;
-Nwv = E_w+Nsw+Ndw+NWdp; Ngs = NWdp+NpdW; Nwt_t = Nwv+Ngs; Nv = Npt_t+Nwt_t;
+Npv = E_p+Nsp+Ndp+NPdw; Nps = NPdw+NwdP; Npt_t = Npv+Nps;
+Nwv = E_w+Nsw+Ndw+NWdp; Nws = NWdp+NpdW; Nwt_t = Nwv+Nws; Nv = Npt_t+Nwt_t;
 idx_power_flow = 1:E_p;
 idx_power_gen = E_p + (1:Nsp);
 idx_power_dem = E_p + Nsp + (1:Ndp);
@@ -207,8 +209,9 @@ for i=1:NPdw
     Aeq4(i,idx_power2water_state(i))=1; Aeq4(i,idx_waterInt_bin(PW_Index(i,2)))=-1;
 end
 for i=1:NWdp
-    Aeq3(i,idx_water2power_dem(i))=1; Aeq3(i,idx_water2power_state(i))=-Dwp(i,3);
-    Aeq4(i,idx_water2power_state(i))=1; Aeq4(i,idx_powerInt_bin(WP_Index(i,2)))=-1;
+    row=NPdw+i;
+    Aeq3(row,idx_water2power_dem(i))=1; Aeq3(row,idx_water2power_state(i))=-Dwp(i,3);
+    Aeq4(row,idx_water2power_state(i))=1; Aeq4(row,idx_powerInt_bin(WP_Index(i,2)))=-1;
 end
 %% 5. Inequality  constraints
 % (1) Flow constraints for driven edges
@@ -227,9 +230,11 @@ for i = 1:NpdW
     wcidx = water_id(i);
     if wcidx > N_w 
         eidx = wcidx - N_w;
+        targetWaterDamaged = isDamgWaterEdge(eidx);
         tag1=tag1+1; Aineq1(tag1,idx_waterInt_bin(i)) = -EdgeWaterCapacity(eidx); Aineq1(tag1,idx_water_flow(eidx)) = -1; bineq1(tag1)=0;
         tag1=tag1+1; Aineq1(tag1,idx_waterInt_bin(i)) = -EdgeWaterCapacity(eidx); Aineq1(tag1,idx_water_flow(eidx)) = 1; bineq1(tag1)=0;
     else
+        targetWaterDamaged = isDamgWaterNode(wcidx);
         cedges = find(EdgeWaterFrom==wcidx | EdgeWaterTo==wcidx);
         for c=1:length(cedges)
             tag1=tag1+1; Aineq1(tag1,idx_waterInt_bin(i))=-EdgeWaterCapacity(cedges(c)); Aineq1(tag1,idx_water_flow(cedges(c)))=-1; bineq1(tag1)=0;
@@ -248,7 +253,7 @@ for i = 1:NpdW
     tag5=tag5+1; Aineq5(tag5,idx_waterInt_bin(i))=-1;
     for s=1:length(temp)
         tag2=tag2+1; Aineq2(tag2,idx_waterInt_bin(i))=1; Aineq2(tag2,idx_power2water_state(temp(s)))=-1; bineq2(tag2)=0;
-        tag4=tag4+1; Aineq4(tag4,idx_power2water_state(temp(s)))=1; bineq4(tag4)=1-isDamgWaterNode(wcidx);
+        tag4=tag4+1; Aineq4(tag4,idx_power2water_state(temp(s)))=1; bineq4(tag4)=1-targetWaterDamaged;
         Aineq5(tag5,idx_power2water_state(temp(s)))=1;
     end
     bineq5(tag5)=length(temp)-1;
@@ -259,9 +264,11 @@ for i = 1:NwdP
     pcidx = power_id(i);
     if pcidx > N_p 
         eidx = pcidx - N_p;
+        targetPowerDamaged = isDamgPowerEdge(eidx);
         tag1=tag1+1; Aineq1(tag1,idx_powerInt_bin(i)) = -EdgePowerCapacity(eidx); Aineq1(tag1,idx_power_flow(eidx)) = -1; bineq1(tag1)=0;
         tag1=tag1+1; Aineq1(tag1,idx_powerInt_bin(i)) = -EdgePowerCapacity(eidx); Aineq1(tag1,idx_power_flow(eidx)) = 1; bineq1(tag1)=0;
     else
+        targetPowerDamaged = isDamgPowerNode(pcidx);
         cedges = find(EdgePowerFrom==pcidx | EdgePowerTo==pcidx);
         for c=1:length(cedges)
             tag1=tag1+1; Aineq1(tag1,idx_powerInt_bin(i))=-EdgePowerCapacity(cedges(c)); Aineq1(tag1,idx_power_flow(cedges(c)))=-1; bineq1(tag1)=0;
@@ -280,7 +287,7 @@ for i = 1:NwdP
     tag5=tag5+1; Aineq5(tag5,idx_powerInt_bin(i))=-1;
     for s=1:length(temp)
         tag2=tag2+1; Aineq2(tag2,idx_powerInt_bin(i))=1; Aineq2(tag2,idx_water2power_state(temp(s)))=-1; bineq2(tag2)=0;
-        tag4=tag4+1; Aineq4(tag4,idx_water2power_state(temp(s)))=1; bineq4(tag4)=1-isDamgPowerNode(pcidx);
+        tag4=tag4+1; Aineq4(tag4,idx_water2power_state(temp(s)))=1; bineq4(tag4)=1-targetPowerDamaged;
         Aineq5(tag5,idx_water2power_state(temp(s)))=1;
     end
     bineq5(tag5)=length(temp)-1;
@@ -336,9 +343,9 @@ WaterSysFunLoss = [1-PostWaterFun/WT, PostWaterFun, WT];
 Interdependency.Dpw=[x(idx_power2water_state), x(idx_power2water_dem)];
 Interdependency.Dwp=[x(idx_water2power_state), x(idx_water2power_dem)];
 
-PowerZoneState(:,1) = [(1:size(TerminalZone,2))'];
+PowerZoneState(:,1) = (1:numel(TerminalZone))';
 PowerZoneState(:,2) = mapNodeStatesToZones(PowerSystem, PostDisasterPowerDemand, TerminalZone,'Flow');
-WaterZoneState(:,1) = [(1:size(TerminalZone,2))'];
+WaterZoneState(:,1) = (1:numel(TerminalZone))';
 WaterZoneState(:,2) = mapNodeStatesToZones(WaterSystem, PostDisasterWaterDemand, TerminalZone,'Flow');
 end
 

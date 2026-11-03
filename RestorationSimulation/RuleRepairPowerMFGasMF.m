@@ -10,7 +10,7 @@ function [PowerResLoss, GasResLoss, PowerSysFunsEvo, GasSysFunsEvo, PowerRepairS
 
 % INPUT:
 %   PowerSystem, GasSystem:
-%       Each is a struct with fields .Node (1¡ÁN) and .Edge (1¡ÁE).
+%       Each is a struct with fields .Node (1xN) and .Edge (1xE).
 %       - PowerSystem.Node fields include:
 %           ID, RealDemand, TargetDemand, RealGeneration, MaxGeneration,
 %           Longitude, Latitude, ServedPopulation, Voltage, ServiceZone,
@@ -32,7 +32,7 @@ function [PowerResLoss, GasResLoss, PowerSysFunsEvo, GasSysFunsEvo, PowerRepairS
 %           .GasToPower  : [GasNodeID, PowerNodeID, ConversionRatio, RealGasFlow, MaxGasFlow]
 %
 %   PowerComDamgScenario, GasComDamgScenario:
-%       Each is an Ndm¡Á4 matrix with rows:
+%       Each is an Ndmx4 matrix with rows:
 %           [DamageType, ComponentID, RepairTime, SysType]
 %         where DamageType = 1 (node) or 2 (edge),
 %               ComponentID = index of node/edge in its system,
@@ -40,7 +40,7 @@ function [PowerResLoss, GasResLoss, PowerSysFunsEvo, GasSysFunsEvo, PowerRepairS
 %               SysType = 1 (power), 2 (gas).
 %   TerminalZone : structure array defining spatial zone divisions.
 %   params (struct), required fields:
-%       .RepairCrew     : [1¡Á2] array specifying the number of repair teams
+%       .RepairCrew     : [1x2] array specifying the number of repair teams
 %                         for power and gas respectively.
 %       .PowerRuleType,
 %       .GasRuleType : 'degree' | 'betweenness' | 'proximity' | 'custom'
@@ -51,10 +51,10 @@ function [PowerResLoss, GasResLoss, PowerSysFunsEvo, GasSysFunsEvo, PowerRepairS
 
 % OUTPUT:
 %   PowerResLoss, GasResLoss:
-%       Each is a 1¡Á3 vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
+%       Each is a 1x3 vector = [NormalizedResilienceLoss, RealResilience, ExpectedResilience]
 
 %   PowerSysFunsEvo, GasSysFunsEvo:
-%       Each is a (K+1)¡Á4 matrix, where K is total completed repairs (all systems combined):
+%       Each is a (K+1)x4 matrix, where K is total completed repairs (all systems combined):
 %           [ time, normalized functionality drop, post-disaster functionality, pre-disaster functionality ]
 
 %   PowerRepairSeq, GasRepairSeq:
@@ -62,8 +62,8 @@ function [PowerResLoss, GasResLoss, PowerSysFunsEvo, GasSysFunsEvo, PowerRepairS
 %           [DamageType, ComponentID, SysType, FinishTime, TeamID]
 %       filtered by SysType = 1 (power), 2 (gas) respectively.
 %   PowerZoneStateEvo, GasZoneStateEvo:
-%       : Z¡ÁK numeric matrix of zone states at critical time points
-%                    - Column 1 is zone ID placeholder ; columns 2..K are service levels
+%       Each is a Z x (K+2) matrix:
+%           [ZoneID, initial service level, service levels after each repair]
 
 %%  Step 1: Validate inputs
 % Rule type
@@ -105,6 +105,9 @@ for k = 1:2
     orderName = OrderFields{k};
     S = Scenarios{k};
     Ndm = size(S,1);
+    if Ndm == 0
+        continue
+    end
     if strcmpi(params.(ruleName), 'custom')
         if ~isfield(params, orderName) || isempty(params.(orderName))
             error('params.%s is required because %s="custom".', orderName, ruleName);
@@ -121,13 +124,13 @@ end
 
 %% Step 2: Rank components per rule OR accept custom order
 % set system type
-if strcmpi(params.PowerRuleType, 'custom')
+if strcmpi(params.PowerRuleType, 'custom') && ~isempty(PowerComDamgScenario)
     Power_seq = rankByRuleSingle(PowerSystem, PowerComDamgScenario, params.PowerRuleType, params.PowerRepairOrder);
 else
     Power_seq = rankByRuleSingle(PowerSystem, PowerComDamgScenario, params.PowerRuleType);
 end
 
-if strcmpi(params.GasRuleType, 'custom')
+if strcmpi(params.GasRuleType, 'custom') && ~isempty(GasComDamgScenario)
     Gas_seq = rankByRuleSingle(GasSystem, GasComDamgScenario, params.GasRuleType, params.GasRepairOrder);
 else
     Gas_seq = rankByRuleSingle(GasSystem, GasComDamgScenario, params.GasRuleType);
@@ -141,7 +144,7 @@ Integrated_schedule=[PowerRepairSeq;GasRepairSeq];
 if ~isempty(Integrated_schedule)
     Integrated_schedule = sortrows(Integrated_schedule, 4);
     [PowerSysFunsEvo, GasSysFunsEvo, PowerResLoss, GasResLoss, PowerZoneStateEvo, GasZoneStateEvo] = computeRestorationCurvePowerMFGasMF...
-        (Integrated_schedule, PowerSystem, GasSystem,PowerGasInterdependency,PowerComDamgScenario, GasComDamgScenario, TerminalZone);
+        (Integrated_schedule, PowerSystem, GasSystem,PowerGasInterdependency,PowerComDamgScenario, GasComDamgScenario, TerminalZone, params);
 else
     PowerResLoss=[0, 0, 0]; GasResLoss=[0, 0, 0];
     [pLoss, gLoss,~,~,zonePower,zoneGas] = GlobalOptPowerMFGasMF(PowerSystem, GasSystem, PowerGasInterdependency,...
@@ -171,14 +174,13 @@ if isempty(ComDamgScenario)
 end
 
 N = numel(CIS.Node);
-E = numel(CIS.Edge);
 edge_from = [CIS.Edge.FromNodeID];
 edge_to   = [CIS.Edge.ToNodeID];
 G = graph(edge_from, edge_to, [], N);
 
 res_seq = ComDamgScenario;
 
-switch ruleType
+switch lower(ruleType)
     case 'degree'
         deg_nodes = degree(G);
         % Node score: degree; Edge score: average degree of its endpoints
@@ -192,12 +194,8 @@ switch ruleType
         res_seq(res_seq(:,1)==2,2) = res_seq(res_seq(:,1)==2,2) - N;
         
     case 'betweenness'
-        network = sparse([edge_from'; edge_to'],[edge_to';edge_from'],1,E,E);
-        [node_bet,E] = betweenness_centrality(network);
-        % compute the betweenness of each edge
-        linear_idx = sub2ind(size(E), edge_from', edge_to');
-        edge_bet = full(E(linear_idx));
-        % Node betweenness + edge betweenness
+        node_bet = centrality(G,'betweenness');
+        edge_bet = (node_bet(edge_from) + node_bet(edge_to))/2;
         comp_score = [node_bet(:); edge_bet(:)];
         
         res_seq(res_seq(:,1)==2,2) = N + res_seq(res_seq(:,1)==2,2);
@@ -233,7 +231,7 @@ end
 end
 
 function [PowerSysFunsEvo, GasSysFunsEvo, PowerResLoss, GasResLoss, PowerZoneStateEvo, GasZoneStateEvo] = computeRestorationCurvePowerMFGasMF...
-    (Integrated_schedule, PowerSystem, GasSystem,PowerGasInterdependency,PowerComDamgScenario, GasComDamgScenario, TerminalZone)
+    (Integrated_schedule, PowerSystem, GasSystem,PowerGasInterdependency,PowerComDamgScenario, GasComDamgScenario, TerminalZone, params)
 
 %   Track functionality over an integrated (merged) repair timeline and
 %   compute per-system resilience loss for power/gas.
@@ -250,12 +248,11 @@ K = size(Integrated_schedule,1);
 tline = [0; Integrated_schedule(:,4)];
 PowerSysFunsEvo = zeros(K+1,4); PowerSysFunsEvo(:,1) = tline;
 GasSysFunsEvo   = zeros(K+1,4); GasSysFunsEvo(:,1)   = tline;
-PowerZoneStateEvo= nan(numel(TerminalZone), K+1);
-GasZoneStateEvo= nan(numel(TerminalZone), K+1);
+PowerZoneStateEvo= nan(numel(TerminalZone), K+2);
+GasZoneStateEvo= nan(numel(TerminalZone), K+2);
 
 % Damage sets
 Damg = {PowerComDamgScenario; GasComDamgScenario};
-params=struct();
 [pLoss, gLoss,~,~,zonePower,zoneGas] = GlobalOptPowerMFGasMF(PowerSystem, GasSystem,  ...
     PowerGasInterdependency, Damg{1}, Damg{2}, TerminalZone, params);
 PowerSysFunsEvo(1,2:4) = pLoss;
